@@ -8,7 +8,7 @@ Running record of results for the directed percolation study. Each claim lists i
 - **Verified exact series:**
   - bond to order 156 for all four moment series (S, μ₀₁, μ₀₂, μ₂₀) (F4);
   - bond to order 166 for S, μ₀₁ and μ₀₂ (F10);
-  - site to order 136 (F8).
+  - site to order 146 (F8).
 
   Jensen reached 171 (bond) and 158 (site).
 - **Reproduction of the 1999 results.**
@@ -230,7 +230,7 @@ This is a weak exclusion. Known D-finite lattice series often need ODEs far larg
 
 Parallel efficiency is about 75% at 4 threads and 60% at 6 here, limited by the busy physical cores. The parallel mode lacks streaming, so it needs about 40% more memory. The block size matters. At 6 threads, blocks of 2, 4, 6, 8 and 12 took 15.8, 13.9, 14.0, 14.2 and 17.2 s, so 4–8 is best (default 8). In the first measurement, a block of 16 took twice as long as 8. Scaling on a many-core server is still unmeasured; it is the first thing to check before renting one.
 
-## F8. Site series to order 136, and the site critical point from universality
+## F8. Site series to orders 136 and 146, and the site critical point from universality
 
 [results/series/site136.json](results/series/site136.json) holds the exact site series to order 136 (Jensen 1999 reached 158). It was reconstructed from four 62-bit primes and verified with the fourth; the largest coefficient has 152 bits, and the series matches the M0 ground truth to order 15.
 
@@ -253,6 +253,25 @@ Parallel efficiency is about 75% at 4 threads and 60% at 6 here, limited by the 
 | μ₂₀ | γ + 2ν⊥ = 4.471425 | 0.70548525 |
 
 The mean of the four is 0.70548522 with a spread of about ±4 × 10⁻⁸, matching Jensen's biased estimate p_c(site) = 0.70548522(4) from 158 terms. The two lattices are consistent with a common set of exponents (universality) at this precision.
+
+**Extended to order 146** ([results/series/site146.json](results/series/site146.json)):
+- seven 31-bit primes, verified; the largest coefficient has 163 bits; the 136-term series is an exact prefix;
+- 17–18 min per prime once the other job had stopped.
+
+Unbiased estimates at 146 terms ([results/analysis/site146_gate_a.json](results/analysis/site146_gate_a.json)) barely moved from 136:
+
+| Quantity | T = 146 |
+| --- | --- |
+| x_c | 0.7054851–0.7054853 |
+| γ | 2.27759–2.27764 |
+| ν∥ | 1.73379–1.73380 |
+| 2ν⊥ | 2.19376–2.19379 |
+
+Biased crossings at 146 terms ([results/analysis/site146_biased.json](results/analysis/site146_biased.json)):
+- μ₀₂/μ₀₁ at 0.70548523 and μ₂₀μ₀₂/μ₀₁² at 0.70548519, both consistent with 0.70548522(4).
+- The biased S and μ₂₀ estimates became erratic above x_c ≈ 0.7054852 (spread up to 3 × 10⁻⁴) and did not cross the bond values in the scanned range, so they are not used.
+
+The site series converges slowly. As in 1999, the site critical point is best fixed by imposing the bond exponents.
 
 ## F9. Exploratory: zeros of the ring transfer matrix (start of M6, haruspicy)
 
