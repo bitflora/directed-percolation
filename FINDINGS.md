@@ -2,6 +2,23 @@
 
 Running record of results for the directed percolation study. Each claim lists its evidence. Numbers marked *provisional* come from runs or analyses still in progress.
 
+## Summary of the first night (November 21–22, 2026)
+
+- **Engine.** An independent reimplementation of Jensen's 1999 algorithm, checked against exact ground truth (F1, F2). It adds translation and mirror reductions, exact window trimming and faster bounds (F3). Per prime it needs roughly 6× less memory than the 1999 implementation.
+- **Verified exact series:**
+  - bond to order 156 for all four moment series (S, μ₀₁, μ₀₂, μ₂₀) (F4);
+  - bond to order 166 for S, μ₀₁ and μ₀₂ (F10);
+  - site to order 136 (F8).
+
+  Jensen reached 171 (bond) and 158 (site).
+- **Reproduction of the 1999 results.**
+  - At Jensen's p_c, biased approximants give γ, ν∥, 2ν⊥ and γ + 2ν⊥ within his error bars.
+  - The ν∥ and 2ν⊥ estimates are stable from 146 to 156 terms.
+  - The site critical point from universality is 0.70548522, as he found (F5, F8).
+- **Gate (M2) passed.** Estimates of ν∥ and ν⊥ improve about 1.8–2× per 10 extra terms, so 200–230 terms should give about one more significant digit (F5).
+- **Solvability.** There is no small linear ODE for any of the series (F6). On rings, the poles of the mean cluster size pinch toward p_c and cluster around the bulk non-physical singularities: a first look at the haruspicy route (F9).
+- **Compute decision (M4).** Order 171 is feasible on this PC. Orders 200 and above need a large-memory machine; projections are in F7.
+
 ## F1. Independent ground truth for small orders (M0)
 
 [analysis/m0_ground_truth.py](analysis/m0_ground_truth.py) computes the four moment series (S, μ₀₁, μ₀₂, μ₂₀) for bond and site DP in exact integers, three independent ways:
@@ -175,7 +192,7 @@ With the 151- and 156-term points included, the drift fits give a 60× (ν∥) a
 | 2ν⊥ | 2.1937038 ± 1.1e-6 | 2.193708(4) | −4.2e-6 |
 | γ + 2ν⊥ | 4.4714237 ± 3.7e-6 | 4.471425(15) | −1.3e-6 |
 
-The ± values are the spread over approximants. All four agree with Jensen within his error bars.
+The ± values are the spread over approximants. All four agree with Jensen within his error bars. Repeating the scan with the 156-term series ([results/analysis/bond156_biased.json](results/analysis/bond156_biased.json)) gives, at p_c = 0.644700185: γ = 2.2777275, ν∥ = 1.7338459, 2ν⊥ = 2.1937016 and γ + 2ν⊥ = 4.4714237. These are unchanged from 146 terms within 1 × 10⁻⁶ (2ν⊥ within 2.2 × 10⁻⁶), so the biased estimates have converged at this length.
 
 Sensitivity to the assumed critical point is dγ/dp_c ≈ 1.5 × 10³ and dν∥/dp_c ≈ 1.0 × 10³. So Jensen's ±5 × 10⁻⁹ on p_c alone allows ±5–8 × 10⁻⁶ in these exponents. The biased S and μ₀₂/μ₀₁ estimates equal Jensen's γ and ν∥ at x_c = 0.64470018615 and 0.64470018620, inside his p_c interval.
 
@@ -252,3 +269,29 @@ The mean of the four is 0.70548522 with a spread of about ±4 × 10⁻⁸, match
 - A non-D-finiteness argument would need the limit of these poles as L → ∞ and a proof that they accumulate densely. Neither is established here.
 
 The computation is cheap: L = 10 took under ten minutes. So M6 can continue to L ≈ 14–16.
+
+## F10. Bond S, μ₀₁, μ₀₂ to order 166
+
+[results/series/bond166.json](results/series/bond166.json) holds the exact S, μ₀₁ and μ₀₂ series to order 166. It was computed with `--no-x`, so μ₂₀ is not included (μ₂₀ remains at order 156).
+- Reconstructed from six 31-bit primes and verified with a seventh, 15-bit prime from the u16 build. Mixed prime sizes work because the reconstruction is by the Chinese remainder theorem.
+- The largest coefficient has 159 bits.
+- The 156-term series is an exact prefix.
+- Each prime took about 37–41 min (u32 and u16, three processes at once, `mixlab` busy).
+
+Estimates (full table: [results/analysis/bond166_gate_report.md](results/analysis/bond166_gate_report.md); biased: [results/analysis/bond166_biased.json](results/analysis/bond166_biased.json)):
+
+| Quantity | T = 156 | T = 161 | T = 166 | Jensen 1999 (171) |
+| --- | --- | --- | --- | --- |
+| γ (S, unbiased) | 2.2777224 | 2.2777244 | 2.2777279 | 2.277730(5) |
+| x_c (S, unbiased) | 0.6447001808 | 0.6447001824 | 0.6447001839 | 0.644700185(5) |
+| ν∥ (R1, unbiased) | 1.7338448 | 1.7338450 | 1.7338462 | 1.733847(6) |
+| x_c (R1, unbiased) | 0.6447001839 | 0.6447001841 | 0.6447001852 | 0.644700185(5) |
+| γ (biased at p_c = 0.644700185) | 2.2777275 | | 2.2777278 | 2.277730(5) |
+| ν∥ (biased at p_c = 0.644700185) | 1.7338459 | | 1.7338459 | 1.733847(6) |
+
+**Reading.**
+- At 166 terms the unbiased critical point from μ₀₂/μ₀₁ is 0.6447001852, Jensen's central value.
+- The unbiased γ and ν∥ estimates are within 2.1 × 10⁻⁶ and 0.8 × 10⁻⁶ of his.
+- The biased estimates at his p_c have not changed by more than 3 × 10⁻⁷ between 146 and 166 terms.
+
+These numbers come from an independently written program, and they are consistent with Jensen's 1999 series and analysis.

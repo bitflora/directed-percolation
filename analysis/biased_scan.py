@@ -36,8 +36,10 @@ def main():
     ser = json.load(open(a.series_json))[a.key]
     T = ser["order"]
     der = derived(ser, T)
-    allser = {"S": ser["S"], "mu01": ser["mu01"], "mu02": ser["mu02"], "mu20": ser["mu20"],
-              "R1": der["R1"], "R2": der["R2"]}
+    allser = {"S": ser["S"], "mu01": ser["mu01"], "mu02": ser["mu02"], "R1": der["R1"]}
+    if "mu20" in ser:  # absent for --no-x runs
+        allser["mu20"] = ser["mu20"]
+        allser["R2"] = der["R2"]
     lo, hi, cnt = Fraction(a.xc[0]), Fraction(a.xc[1]), int(a.xc[2])
     grid = [lo + (hi - lo) * Fraction(i, cnt - 1) for i in range(cnt)]
     targets = dict(kv.split("=") for kv in a.target)
