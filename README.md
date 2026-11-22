@@ -9,6 +9,8 @@ Literature search completed November 21, 2026. Implementation started the same n
 
 Results so far are in [FINDINGS.md](FINDINGS.md), and the milestone status is at the top of [RESEARCH_PLAN.md](RESEARCH_PLAN.md).
 
+Headline: an independent implementation reproduced Jensen's 1999 bond results at his own length. At 171 terms, p_c, γ and ν∥ all agree within his error bars. The precision-gain gate passed, so extending to 200–230 terms is worth doing.
+
 Main findings from the literature search (computed results are in [FINDINGS.md](FINDINGS.md), summarized at its top):
 
 - The 1999 record still stands.

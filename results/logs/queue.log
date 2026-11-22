@@ -1,0 +1,24 @@
+[2026-11-21 23:09:33] start bond156 X (primes 0-3)
+[2026-11-21 23:19:14] start site136 primes 2-3
+[2026-11-21 23:23:03] start bond156 Y (primes 4-6)
+[2026-11-22 00:05:42] site136 b done
+[2026-11-22 00:06:01] start bond156 Z (prime 3, v10u32)
+[2026-11-22 00:47:55] start bond156 W (prime 2, v11u32)
+[2026-11-22 00:53:18] stopping X after prime 1: 52724
+[2026-11-22 00:53:18] bond156 X done
+[2026-11-22 00:53:18] start bond156 V (prime 6, v11u32)
+[2026-11-22 01:00:21] stopping Y after prime 5: 3476
+[2026-11-22 01:00:21] bond156 Y done
+[2026-11-22 01:00:21] queue done
+[2026-11-22 01:10:15] start bond166 P (primes 0-3, --no-x)
+[2026-11-22 01:14:14] bond156 rebalance done
+[2026-11-22 01:14:17] start bond166 Q (primes 4-6, --no-x)
+[2026-11-22 01:41:59] start bond166 R1 (u16 prime 0, --no-x)
+[2026-11-22 02:20:13] start bond166 R2 (u32 prime 2, --no-x)
+[2026-11-22 02:33:18] stopping bond166 P after primes 0-1 (pid 64404)
+[2026-11-22 02:59:02] bond166 rebalance done
+[2026-11-22 03:13:47] bond166 done
+[2026-11-22 03:13:48] start site146 S1 (primes 0-2)
+[2026-11-22 03:25:26] start site146 S1 (0-2), S2 (3-4), S3 (5-6)
+[2026-11-22 04:06:38] start bond171 (--no-x, u32, 7 primes, 6 threads)
+[2026-11-22 05:26:56] bond171 done

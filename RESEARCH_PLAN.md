@@ -2,14 +2,14 @@
 
 Status, morning of November 22, 2026:
 - M0 and the M2 gate are done.
-- M1 is done to order 156 (bond, all moments), 166 (bond, S/μ₀₁/μ₀₂) and 136 (site).
+- M1 is done to order 156 (bond, all moments), 171 (bond, S/μ₀₁/μ₀₂) and 146 (site).
 - M3 is partly done.
 - M6 has started. Results are in [FINDINGS.md](FINDINGS.md). The plan follows the prior-art assessment in [REVIEW.md](REVIEW.md); source IDs refer to [SOURCES.md](SOURCES.md).
 
 | Milestone | Status |
 | --- | --- |
 | M0 ground truth | Done: three independent exact methods agree to order 15 (F1) |
-| M1 reimplementation | Done in [enum/](enum/README.md). Verified bond series to 156 terms (all moments) and 166 terms (S, μ₀₁, μ₀₂); site to 136 terms. At 166 terms the estimates coincide with Jensen's 171-term values. The full 171/158 reproduction was not run tonight |
+| M1 reimplementation | Done in [enum/](enum/README.md). Verified bond series to 156 terms (all moments) and 171 terms (S, μ₀₁, μ₀₂); site to 146 terms. At 171 terms every estimate agrees with Jensen's within his errors (FINDINGS F11). Still to run: μ₂₀ at 171 and site at 158 |
 | M2 analysis and gate | Done. **Gate passed**: ν∥ and ν⊥ improve about 1.6–2× per 10 terms (FINDINGS F5) |
 | M3 engineering | Partly done (F2, F3): shape, mirror, zero-state and window-trimming reductions; mask bounds and exact lower ends for single-source targets; u32 and u16 builds, streaming and block-parallel steps. Not yet done: SIMD, out-of-core, Zbarsky sparsification, and measuring parallel efficiency on an idle machine |
 | M4 compute decision | Open; measured projections in FINDINGS |
@@ -117,8 +117,8 @@ No paid or external resources are used without explicit approval.
 - Order 230 needs about 1 TB.
 
 Recommended next steps, cheapest first:
-1. On an idle machine, measure the parallel efficiency of `--threads N --block K` at n = 120–140. This decides the cloud estimates.
-2. Reproduce order 171 locally with `--features u32 --no-x` in two processes (about 2.5 GB each), then run μ₂₀ separately. This gives a like-for-like comparison with Jensen's estimates at his own length. An exact coefficient check needs his series files.
+1. Parallel efficiency is about 75% at 4 threads and 60% at 6 on the laptop (FINDINGS F7). Measure it on a many-core server before renting one for long.
+2. Order 171 for S, μ₀₁ and μ₀₂ is done (12 min per prime with 6 threads). Run μ₂₀ at 171 (all moments: about 4–5 GB, so one process at a time) to complete the 1999 set. An exact coefficient check still needs his series files.
 3. Only then decide on a 128 GB to 1 TB node for 200–230 terms.
 
 ## M5: Production runs and analysis

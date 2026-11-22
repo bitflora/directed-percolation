@@ -1,0 +1,9 @@
+L=3: 3 orbit states, reduced denominator degree 10 (cancelled 0), 5 distinct poles; closest to p_c: ['1.0000+0.0000i', '-0.3996+0.3697i', '-0.3996-0.3697i']
+L=4: 5 orbit states, reduced denominator degree 19 (cancelled 0), 12 distinct poles; closest to p_c: ['1.0000+0.0000i', '1.3809+0.0000i', '0.8764+0.7892i']
+L=5: 7 orbit states, reduced denominator degree 32 (cancelled 0), 23 distinct poles; closest to p_c: ['1.0000+0.0000i', '0.7163+0.5275i', '0.7163-0.5275i']
+L=6: 13 orbit states, reduced denominator degree 58 (cancelled 0), 47 distinct poles; closest to p_c: ['1.0000+0.0000i', '0.6749+0.4064i', '0.6749-0.4064i']
+L=7: 19 orbit states, reduced denominator degree 96 (cancelled 6), 83 distinct poles; closest to p_c: ['0.6577+0.3348i', '0.6577-0.3348i', '1.0000+0.0000i']
+L=8: 35 orbit states, reduced denominator degree 176 (cancelled 22), 161 distinct poles; closest to p_c: ['0.6489+0.2866i', '0.6489-0.2866i', '1.0000+0.0000i']
+L=9: 59 orbit states, reduced denominator degree 297 (cancelled 65), 280 distinct poles; closest to p_c: ['0.6439+0.2516i', '0.6439-0.2516i', '0.6884+0.3293i']
+L=10: 107 orbit states, reduced denominator degree 548 (cancelled 162), 529 distinct poles; closest to p_c: ['0.6408+0.2249i', '0.6408-0.2249i', '0.6775+0.2921i']
+wrote results/analysis/strip_poles_reduced.png

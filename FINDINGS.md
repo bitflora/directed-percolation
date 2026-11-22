@@ -7,17 +7,18 @@ Running record of results for the directed percolation study. Each claim lists i
 - **Engine.** An independent reimplementation of Jensen's 1999 algorithm, checked against exact ground truth (F1, F2). It adds translation and mirror reductions, exact window trimming and faster bounds (F3). Per prime it needs roughly 6× less memory than the 1999 implementation.
 - **Verified exact series:**
   - bond to order 156 for all four moment series (S, μ₀₁, μ₀₂, μ₂₀) (F4);
-  - bond to order 166 for S, μ₀₁ and μ₀₂ (F10);
+  - bond to order 171 for S, μ₀₁ and μ₀₂, Jensen's own length (F10, F11);
   - site to order 146 (F8).
 
   Jensen reached 171 (bond) and 158 (site).
 - **Reproduction of the 1999 results.**
+  - At 171 terms (F11), the unbiased p_c, γ, ν∥ and the μ₀₁ and μ₀₂ exponents all agree with Jensen's values within his error bars.
   - At Jensen's p_c, biased approximants give γ, ν∥, 2ν⊥ and γ + 2ν⊥ within his error bars.
   - The ν∥ and 2ν⊥ estimates are stable from 146 to 156 terms.
   - The site critical point from universality is 0.70548522, as he found (F5, F8).
 - **Gate (M2) passed.** Estimates of ν∥ and ν⊥ improve about 1.8–2× per 10 extra terms, so 200–230 terms should give about one more significant digit (F5).
 - **Solvability.** There is no small linear ODE for any of the series (F6). On rings, the poles of the mean cluster size pinch toward p_c and cluster around the bulk non-physical singularities: a first look at the haruspicy route (F9).
-- **Compute decision (M4).** Order 171 is feasible on this PC. Orders 200 and above need a large-memory machine; projections are in F7.
+- **Compute decision (M4).** Measured: order 171 for S, μ₀₁ and μ₀₂ takes 12 min per prime with 6 threads and 2.2 GB on this laptop (F11), and parallel efficiency is about 60–75% (F7). Orders 200 and above need a large-memory machine; projections are in F7.
 
 ## F1. Independent ground truth for small orders (M0)
 
@@ -65,6 +66,7 @@ The rate is 2^(1/8) = 1.0905 per term, the same as Jensen 1999's algorithm. The 
 - Order 126 needs 210 MiB, storing three moments as 8-byte residues. Extrapolating at 1.09 per term gives about 10 GB at order 171.
 - In Jensen's storage format (one polynomial, 2-byte residues), the same states would need roughly 10 GB / 12 ≈ 0.85 GB, against the 5.5 GB he reports for order 171.
 - So the shape, mirror and bound reductions are worth roughly a factor of 6, or about 20 extra terms at fixed memory. This is *provisional*: it extrapolates our measurements and assumes his memory figure is comparable.
+- Measured at order 171 (F11): S, μ₀₁ and μ₀₂ with 4-byte residues peaked at 2.2 GB in parallel mode. That is roughly 1.6 GB in streaming mode, allowing for the 40% parallel overhead. Jensen's 5.5 GB covered all four series with 2-byte residues, so the comparison is indicative only.
 
 **Bounds matter most.** Replacing the interval-cover lower bound on bonds already placed with the simple bound 2s multiplies the state count by 4.6 at n = 100.
 
@@ -295,7 +297,7 @@ The site series converges slowly. As in 1999, the site critical point is best fi
 **What this does not show.**
 - A non-D-finiteness argument would need the limit of these poles as L → ∞ and a proof that they accumulate densely. Neither is established here.
 
-The computation is cheap: L = 10 took under ten minutes. So M6 can continue to L ≈ 14–16.
+L = 10 took about ten minutes. An attempt at L = 11 (187 orbit states) was stopped after 3.2 CPU-hours and 2.8 GB without finishing even the first determinant: Python-level Bareiss elimination on polynomial matrices does not scale past L ≈ 10. Going to L ≈ 14–16 for M6 will need determinants computed modulo primes at many evaluation points in compiled code (for example inside the Rust engine), followed by interpolation and CRT.
 
 ## F10. Bond S, μ₀₁, μ₀₂ to order 166
 
@@ -322,3 +324,29 @@ Estimates (full table: [results/analysis/bond166_gate_report.md](results/analysi
 - The biased estimates at his p_c have not changed by more than 3 × 10⁻⁷ between 146 and 166 terms.
 
 These numbers come from an independently written program, and they are consistent with Jensen's 1999 series and analysis.
+
+## F11. Bond S, μ₀₁, μ₀₂ at Jensen's own length, 171 terms
+
+[results/series/bond171.json](results/series/bond171.json) holds the exact S, μ₀₁ and μ₀₂ series to order 171, the length of Jensen's 1999 bond series. μ₂₀ is not included (`--no-x`).
+- Reconstructed from seven 31-bit primes and verified; the largest coefficient has 164 bits; the 166-term series is an exact prefix.
+- The analysis below ran on the 6-prime reconstruction while the 7th prime was computing. That reconstruction proved identical to the verified series.
+
+**Cost.** One process with 6 threads in block-parallel mode (`--threads 6 --block 6`, u32, `--no-x`) took 11.0–12.1 min per prime, about 80 min for all seven, with a 2.2 GB peak. This was on the laptop after the other job had stopped.
+
+**Estimates at equal length** ([results/analysis/bond171_gate_report.md](results/analysis/bond171_gate_report.md), [results/analysis/bond171_biased.json](results/analysis/bond171_biased.json)):
+
+| Quantity | This work, 171 terms | Jensen 1999, 171 terms | Difference |
+| --- | --- | --- | --- |
+| p_c from μ₀₂/μ₀₁ (unbiased) | 0.6447001855 | 0.644700185(5) | +5e-10 |
+| p_c from S (unbiased) | 0.6447001847 | | −3e-10 |
+| ν∥ (μ₀₂/μ₀₁, unbiased) | 1.7338467 | 1.733847(6) | −3.5e-7 |
+| γ (S, unbiased) | 2.2777288 | 2.277730(5) | −1.2e-6 |
+| γ + ν∥ (μ₀₁) | 4.0115503 | 4.01156(1) | −9.7e-6 |
+| γ + 2ν∥ (μ₀₂) | 5.7453796 | 5.74539(1) | −1.0e-5 |
+| γ (biased at 0.644700185) | 2.2777276 | 2.277730(5) | −2.4e-6 |
+| ν∥ (biased at 0.644700185) | 1.7338459 | 1.733847(6) | −1.1e-6 |
+
+**Conclusions.**
+- Every estimate agrees with Jensen's within his quoted error, from series computed by an independently written program and analysed with an independently written approximant code. This is the strongest available evidence, short of comparing his coefficient files, that the two series are the same and that his 1999 numbers are sound.
+- The biased estimates are identical to the 146-, 156- and 166-term values within about 3 × 10⁻⁷, so at fixed p_c the limiting uncertainty is p_c itself.
+- dν∥/dp_c ≈ 1.0 × 10³, so pinning p_c to ±1 × 10⁻¹⁰ would fix ν∥ to about ±1 × 10⁻⁷. That is the case for the longer series in M5.

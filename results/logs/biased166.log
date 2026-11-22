@@ -1,0 +1,8 @@
+S xc=0.6447001800 exponent=2.2777215 ±2.5e-06 (154)
+S xc=0.6447001850 exponent=2.2777278 ±8.5e-07 (154)
+S xc=0.6447001900 exponent=2.2777419 ±1.7e-06 (154)
+  S: biased exponent equals gamma = 2.27773 at x_c = 0.6447001858
+R1 xc=0.6447001800 exponent=1.7338409 ±1.5e-06 (154)
+R1 xc=0.6447001850 exponent=1.7338459 ±9.1e-08 (154)
+R1 xc=0.6447001900 exponent=1.7338516 ±3.5e-07 (154)
+  R1: biased exponent equals nu_par = 1.733847 at x_c = 0.6447001860
