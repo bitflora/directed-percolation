@@ -47,10 +47,12 @@ def derived(ser, n):
     """Ratio series. mu01 and mu02 start at p^1, so divide both by p first."""
     m01 = ser["mu01"][1:n + 1]
     m02 = ser["mu02"][1:n + 1]
-    m20 = ser["mu20"][1:n + 1]
     r1 = series_div(m02, m01, n)
-    r2 = series_div(series_mul(m20, m02, n), series_mul(m01, m01, n), n)
-    return {"R1": r1, "R2": r2}
+    out = {"R1": r1}
+    if "mu20" in ser:  # absent for --no-x runs
+        m20 = ser["mu20"][1:n + 1]
+        out["R2"] = series_div(series_mul(m20, m02, n), series_mul(m01, m01, n), n)
+    return out
 
 
 TARGET = {"S": "gamma", "mu01": "gamma+nu_par", "mu02": "gamma+2nu_par",
@@ -61,7 +63,10 @@ def analyse(ser, T, guess, Ks=(2, 3), Ls=range(0, 11, 2), span=10, names=None, m
     out = []
     der = derived(ser, T)
     allser = {"S": ser["S"][:T + 1], "mu01": ser["mu01"][:T + 1], "mu02": ser["mu02"][:T + 1],
-              "mu20": ser["mu20"][:T + 1], "R1": der["R1"][:T], "R2": der["R2"][:T]}
+              "R1": der["R1"][:T]}
+    if "mu20" in ser:
+        allser["mu20"] = ser["mu20"][:T + 1]
+        allser["R2"] = der["R2"][:T]
     for name in names or allser:
         s = allser[name]
         Tn = len(s)

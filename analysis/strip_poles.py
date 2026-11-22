@@ -77,10 +77,12 @@ def transfer(L):
     return reps, T
 
 
-def det_poly(L):
+def det_poly(L, rank_one=False):
     """det(I - T_L(p)) as exact integer coefficients, by fraction-free (Bareiss)
     elimination over Z[p]. I - T(0) = I, so every pivot has constant term 1 and
-    no pivoting is needed."""
+    no pivoting is needed. With rank_one=True, returns det(I - T + n e_s^T),
+    where n is the occupation count and e_s the singleton state; by the matrix
+    determinant lemma, S_L = det(I - T + n e_s^T) / det(I - T) - 1."""
     reps, T = transfer(L)
     N = len(reps)
     M = [[flint.fmpz_poly([0]) for _ in range(N)] for _ in range(N)]
@@ -88,6 +90,10 @@ def det_poly(L):
         M[i][i] = flint.fmpz_poly([1])
         for jx, poly in T[i].items():
             M[i][jx] = M[i][jx] - flint.fmpz_poly(poly)
+    if rank_one:
+        js = reps.index(1)  # the singleton orbit
+        for i in range(N):
+            M[i][js] = M[i][js] + bin(reps[i]).count("1")
     prev = flint.fmpz_poly([1])
     for k in range(N - 1):
         piv = M[k][k]
@@ -107,15 +113,20 @@ def main():
     for L in map(int, sys.argv[1:]):
         N, coeffs = det_poly(L)
         P = flint.fmpz_poly(coeffs)
+        # S_L = (det B - det A) / det A; cancel common factors to get true poles
+        _, cb = det_poly(L, rank_one=True)
+        num = flint.fmpz_poly(cb) - P
+        g = P.gcd(num)
+        P = P // g
         roots = []
         for r, mult in P.complex_roots():
             z = complex(r)
             roots.append([z.real, z.imag, mult])
-        out[L] = {"states": N, "degree": P.degree(), "roots": roots}
+        out[L] = {"states": N, "degree": P.degree(), "cancelled_degree": g.degree(), "roots": roots}
         near = sorted(roots, key=lambda r: abs(complex(r[0], r[1]) - 0.6447))[:3]
-        print(f"L={L}: {N} orbit states, det degree {P.degree()}, {len(roots)} distinct zeros; "
+        print(f"L={L}: {N} orbit states, reduced denominator degree {P.degree()} (cancelled {g.degree()}), {len(roots)} distinct poles; "
               f"closest to p_c: {[f'{a:.4f}{b:+.4f}i' for a, b, _ in near]}", flush=True)
-        json.dump(out, open("results/analysis/strip_poles.json", "w"))
+        json.dump(out, open("results/analysis/strip_poles_reduced.json", "w"))
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -136,11 +147,11 @@ def main():
         ax.axvline(0, lw=0.5, color="0.6")
         ax.set_xlabel("Re p")
         ax.set_ylabel("Im p")
-        ax.set_title("Zeros of det(I - T_L(p)), bond DP on a ring of L sites\n"
+        ax.set_title("Poles of S_L(p) (common factors cancelled), bond DP on a ring of L sites\n"
                      "red +: bulk non-physical singularities (Jensen 1999)")
         ax.legend(loc="upper left", fontsize=8)
-        fig.savefig("results/analysis/strip_poles.png", dpi=130, bbox_inches="tight")
-        print("wrote results/analysis/strip_poles.png")
+        fig.savefig("results/analysis/strip_poles_reduced.png", dpi=130, bbox_inches="tight")
+        print("wrote results/analysis/strip_poles_reduced.png")
     except Exception as e:  # plotting is optional
         print("plot skipped:", e)
 

@@ -91,6 +91,11 @@ Each change below was verified to give identical series: the order-15 fixture, a
 
 The coefficients cannot be compared term by term with Jensen's, because his series files are not available online. The checks against his series are therefore the critical-point and exponent estimates in F5.
 
+**Extended to order 156.** [results/series/bond156.json](results/series/bond156.json) is the same four series to order 156.
+- Reconstructed from seven 31-bit primes and verified (the largest coefficient has 149 bits).
+- The 146-term series is an exact prefix.
+- No ODE with (k + 1)(d + 1) ≤ 147 exists for any of the four series ([results/analysis/dfinite_bond156.txt](results/analysis/dfinite_bond156.txt)).
+
 ## F6. No small linear ODE (D-finiteness search)
 
 [analysis/dfinite.py](analysis/dfinite.py) solves the linear system for an ODE Σ_{i≤k} P_i(x) θⁱ f = 0 with deg P_i ≤ d modulo two 62-bit primes. It uses 10 more equations than unknowns, and was checked on a known D-finite series (central binomial coefficients, found at order 1, degree 1).
@@ -169,7 +174,8 @@ Sensitivity to the assumed critical point is dγ/dp_c ≈ 1.5 × 10³ and dν∥
 | --- | --- | --- | --- |
 | bond, n = 126 | u64, v4 | 210 MiB | 2.8 min |
 | bond, n = 146 | u64, v4 | 1.19 GB | 31 min |
-| bond, n = 156 | u32, v8 | 1.33 GB | about 80 min (2–4 processes of ours running at once) |
+| bond, n = 156 | u32, v8 | 1.33 GB | 62–65 min with 4–5 of our processes running at once; 32–41 min with fewer |
+| bond, n = 156 | u32, v10/v11 | 1.31 GB | 40 min with 4 of our processes running; 21–22 min with 3 |
 
 **Growth:** states and memory grow by 1.09 per term, time by about 1.10 per term. Since these runs, engine v10 is about 20% faster and 5% leaner, and `--no-x` (dropping μ₂₀) roughly halves memory.
 
@@ -177,7 +183,7 @@ Sensitivity to the assumed critical point is dγ/dp_c ≈ 1.5 × 10³ and dν∥
 
 | Target order | Memory per prime (u32, all moments) | Single-thread time per prime, contended | Feasible where |
 | --- | --- | --- | --- |
-| 171 (reproduce 1999) | about 4.6 GB (about 2.5 GB with `--no-x`) | about 4.5 h | This PC. About 30 h total with all moments in one process, or about 16 h with `--no-x` in two. Likely 2–3× faster if the other job is not running. |
+| 171 (reproduce 1999) | about 4.6 GB (about 2.5 GB with `--no-x`) | about 1.5 h with v11 (scaled from 22 min at n = 156) | This PC: about 10 h for 7 primes with all moments in one process, or about 4–5 h with `--no-x` in two processes, plus a separate μ₂₀ run |
 | 200 | about 57 GB | about 70 h (much less multithreaded and uncontended) | A 128 GB node with the sharded multithreaded mode (`--threads`), roughly 3 h per prime at 16 threads (estimate) |
 | 230 | about 0.8 TB | far beyond single-thread | A 1 TB node, roughly 15–20 h per prime at 32 threads (estimate), so several days for 7 primes |
 
@@ -226,8 +232,9 @@ The mean of the four is 0.70548522 with a spread of about ±4 × 10⁻⁸, match
 - **Pinching at p_c.** A pair of zeros pinches toward p_c as L grows, in the way Yang–Lee edges do. The effective exponent from successive imaginary parts falls toward 1/ν⊥ ≈ 0.91: it is about 1.1 between L = 8 and 9.
 - **Clustering at the bulk non-physical singularities.** Zeros cluster around −0.517 on the negative axis and −0.226 ± 0.440i, the singularities Jensen located in the bulk series. With growing L they fill out bands and arcs rather than isolated points.
 
-**What this does not show.**
-- Zeros of the determinant can cancel against zeros of the numerator, so not every point is a pole of S_L.
-- A non-D-finiteness argument would need the poles of S_L themselves, their limit as L → ∞, and a proof that they accumulate densely. None of that is established here.
+**Cancellation.** By the matrix determinant lemma, S_L = det(I − T + n e_sᵀ)/det(I − T) − 1, and the script removes the common factor of numerator and denominator. Nothing cancels for L ≤ 6. The cancelled degree is 6, 22, 65 and 162 for L = 7, 8, 9 and 10, so the true pole counts are 83, 161, 280 and 529. The reduced rational functions reproduce the bulk series through order 2L − 1, and the poles nearest p_c are unchanged. The plot of the true poles is [results/analysis/strip_poles_reduced.png](results/analysis/strip_poles_reduced.png).
 
-The computation is cheap: L = 10 took under ten minutes. So M6 can continue to L ≈ 14–16 with a numerator computation to remove cancelled zeros.
+**What this does not show.**
+- A non-D-finiteness argument would need the limit of these poles as L → ∞ and a proof that they accumulate densely. Neither is established here.
+
+The computation is cheap: L = 10 took under ten minutes. So M6 can continue to L ≈ 14–16.

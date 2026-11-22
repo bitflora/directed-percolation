@@ -1,0 +1,56 @@
+bond S: 157 terms, margin 10, primes 2147483647 and 2147483563
+k  largest d excluded  unknowns
+ 0   146    147   none (both primes)
+ 1    72    146   none (both primes)
+ 2    48    147   none (both primes)
+ 3    35    144   none (both primes)
+ 4    28    145   none (both primes)
+ 5    23    144   none (both primes)
+ 6    20    147   none (both primes)
+ 7    17    144   none (both primes)
+ 8    15    144   none (both primes)
+ 9    13    140   none (both primes)
+10    12    143   none (both primes)
+No ODE of order k with polynomial degree <= the listed d exists for this series (mod these primes).
+bond mu01: 157 terms, margin 10, primes 2147483647 and 2147483563
+k  largest d excluded  unknowns
+ 0   146    147   none (both primes)
+ 1    72    146   none (both primes)
+ 2    48    147   none (both primes)
+ 3    35    144   none (both primes)
+ 4    28    145   none (both primes)
+ 5    23    144   none (both primes)
+ 6    20    147   none (both primes)
+ 7    17    144   none (both primes)
+ 8    15    144   none (both primes)
+ 9    13    140   none (both primes)
+10    12    143   none (both primes)
+No ODE of order k with polynomial degree <= the listed d exists for this series (mod these primes).
+bond mu02: 157 terms, margin 10, primes 2147483647 and 2147483563
+k  largest d excluded  unknowns
+ 0   146    147   none (both primes)
+ 1    72    146   none (both primes)
+ 2    48    147   none (both primes)
+ 3    35    144   none (both primes)
+ 4    28    145   none (both primes)
+ 5    23    144   none (both primes)
+ 6    20    147   none (both primes)
+ 7    17    144   none (both primes)
+ 8    15    144   none (both primes)
+ 9    13    140   none (both primes)
+10    12    143   none (both primes)
+No ODE of order k with polynomial degree <= the listed d exists for this series (mod these primes).
+bond mu20: 157 terms, margin 10, primes 2147483647 and 2147483563
+k  largest d excluded  unknowns
+ 0   146    147   none (both primes)
+ 1    72    146   none (both primes)
+ 2    48    147   none (both primes)
+ 3    35    144   none (both primes)
+ 4    28    145   none (both primes)
+ 5    23    144   none (both primes)
+ 6    20    147   none (both primes)
+ 7    17    144   none (both primes)
+ 8    15    144   none (both primes)
+ 9    13    140   none (both primes)
+10    12    143   none (both primes)
+No ODE of order k with polynomial degree <= the listed d exists for this series (mod these primes).
