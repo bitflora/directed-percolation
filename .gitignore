@@ -6,3 +6,4 @@ results/runs/
 enum/target_prof/
 enum/target_u32/
 enum/target_u16/
+enum/target_native/
