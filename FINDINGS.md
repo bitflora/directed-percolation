@@ -208,3 +208,26 @@ Sensitivity to the assumed critical point is dγ/dp_c ≈ 1.5 × 10³ and dν∥
 | μ₂₀ | γ + 2ν⊥ = 4.471425 | 0.70548525 |
 
 The mean of the four is 0.70548522 with a spread of about ±4 × 10⁻⁸, matching Jensen's biased estimate p_c(site) = 0.70548522(4) from 158 terms. The two lattices are consistent with a common set of exponents (universality) at this precision.
+
+## F9. Exploratory: zeros of the ring transfer matrix (start of M6, haruspicy)
+
+[analysis/strip_poles.py](analysis/strip_poles.py) computes det(I − T_L(p)) exactly for bond DP on a ring of L sites. It uses states up to rotation and fraction-free elimination over Z[p], then finds all complex zeros with python-flint's rigorous root finder. These zeros are the candidate poles of the ring mean cluster size S_L(p), which is a rational function of p. On rings, S_L agrees with the bulk series through order 2L − 1 (checked for L = 4, 6, 8).
+
+| L | Orbit states | det degree | Zero nearest p_c |
+| --- | --- | --- | --- |
+| 5 | 7 | 32 | 0.7163 ± 0.5275i |
+| 6 | 13 | 58 | 0.6749 ± 0.4064i |
+| 7 | 19 | 102 | 0.6577 ± 0.3348i |
+| 8 | 35 | 198 | 0.6489 ± 0.2866i |
+| 9 | 59 | 362 | 0.6439 ± 0.2516i |
+| 10 | 107 | 710 | 0.6408 ± 0.2249i |
+
+**Observations** (exploratory; see the plot [results/analysis/strip_poles.png](results/analysis/strip_poles.png)):
+- **Pinching at p_c.** A pair of zeros pinches toward p_c as L grows, in the way Yang–Lee edges do. The effective exponent from successive imaginary parts falls toward 1/ν⊥ ≈ 0.91: it is about 1.1 between L = 8 and 9.
+- **Clustering at the bulk non-physical singularities.** Zeros cluster around −0.517 on the negative axis and −0.226 ± 0.440i, the singularities Jensen located in the bulk series. With growing L they fill out bands and arcs rather than isolated points.
+
+**What this does not show.**
+- Zeros of the determinant can cancel against zeros of the numerator, so not every point is a pole of S_L.
+- A non-D-finiteness argument would need the poles of S_L themselves, their limit as L → ∞, and a proof that they accumulate densely. None of that is established here.
+
+The computation is cheap: L = 10 took under ten minutes. So M6 can continue to L ≈ 14–16 with a numerator computation to remove cancelled zeros.

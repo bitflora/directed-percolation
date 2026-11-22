@@ -3,7 +3,7 @@ param([int]$MinFreeMB = 400, [string]$Log = "results/logs/watchdog.log")
 while ($true) {
   $os = Get-CimInstance Win32_OperatingSystem
   $free = [math]::Round($os.FreePhysicalMemory / 1KB)
-  $procs = Get-Process -Name dpenum_v4,dpenum_v8,dpenum_v8u32,dpenum -ErrorAction SilentlyContinue | Sort-Object StartTime
+  $procs = Get-Process -Name dpenum* -ErrorAction SilentlyContinue | Sort-Object StartTime
   if (-not $procs) { Start-Sleep -Seconds 30; continue }
   if ($free -lt $MinFreeMB -and $procs.Count -gt 1) {
     $victim = $procs[-1]
