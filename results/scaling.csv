@@ -1,0 +1,15 @@
+model,n,peak_states
+bond,60,1622
+bond,70,4218
+bond,80,10853
+bond,90,26668
+bond,100,65551
+bond,110,155778
+bond,120,373492
+site,60,2855
+site,70,7680
+site,80,20725
+site,90,52599
+site,100,136583
+site,110,338380
+site,120,827588
