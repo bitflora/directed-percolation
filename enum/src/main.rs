@@ -54,6 +54,7 @@ pub struct Params {
     pub nosign: bool, // diagnostics only: count graphs without signs (no cancellation)
     pub cheap_lo: bool, // experiment: lower end 2s + fixed for hashed targets, rely on trimming
     pub block: usize,   // parallel mode: kink steps per synchronization
+    pub park: bool,     // single-thread mode: parked pass (--park): ~11% faster, ~46% more memory
 }
 
 pub static BOUND_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -103,7 +104,7 @@ mod tests {
     fn params(n: usize, model: Model) -> Params {
         let tmax = if model == Model::Bond { n / 2 } else { (n + 1) / 2 };
         Params { n, model, tmax, moments: 3, verbose: false, loose: false, mirror: true,
-                 threads: 1, shards: 1, slack: false, nosign: false, cheap_lo: false, block: 8 }
+                 threads: 1, shards: 1, slack: false, nosign: false, cheap_lo: false, block: 8, park: true }
     }
 
     #[test]
@@ -510,6 +511,39 @@ pub fn run(p: &Params, m: Mod) -> Raw {
     for s in 0..p.tmax {
         let wmax = layer.iter().map(|t| t.max_width()).max().unwrap_or(0);
         let mut j = 0usize;
+        if threads <= 1 && p.park {
+            // Parked single-thread pass: every state waits in the table of the
+            // next column that changes it, so states a column does not touch
+            // are never copied (about half of all state-steps otherwise).
+            let done = wmax + 2;
+            let mut pend: Vec<Table> = (0..=done).map(|_| Table::new(nm, 16)).collect();
+            for si in 0..layer.len() {
+                let src = std::mem::replace(&mut layer[si], Table::new(nm, 0));
+                for i in 0..src.len() {
+                    let key = src.key(i);
+                    let na = next_active(key, 0, done);
+                    let (lo, hi) = src.window(i);
+                    if let Some((idx, nlo, nhi)) = pend[na].get_or_insert(key, |_| Some((lo, hi))) {
+                        add_block(&src, i, &mut pend[na], idx, nlo, nhi, 0, false, nm, m);
+                    }
+                }
+            }
+            for jj in 0..done {
+                let mut t = std::mem::replace(&mut pend[jj], Table::new(nm, 0));
+                t.finish();
+                STATE_STEPS.fetch_add(t.len() as u64, Ordering::Relaxed);
+                for i in 0..t.len() {
+                    step_parked(&t, i, &mut pend, jj, s, p, m, done);
+                }
+                let b: usize = pend.iter().map(|x| x.bytes()).sum::<usize>() + t.bytes();
+                peak_bytes = peak_bytes.max(b);
+                peak_states = peak_states.max(pend.iter().map(|x| x.len()).sum::<usize>());
+            }
+            let mut fin = std::mem::replace(&mut pend[done], Table::new(nm, 0));
+            fin.finish();
+            layer = vec![fin];
+            j = wmax + 2; // skip the per-column loop below
+        }
         while j <= wmax + 1 {
             let bj: u128 = 1 << j;
             let bj1: u128 = 1 << (j + 1);
@@ -779,6 +813,103 @@ fn row_end_one(tab: &Table, i: usize, nt: &mut Table, sc: &mut Scratch, t: usize
     }
 }
 
+/// First column >= k at which `key` changes (bit k or k+1 set), or `done`.
+#[inline(always)]
+fn next_active(key: u128, k: usize, done: usize) -> usize {
+    if k >= 127 {
+        return done;
+    }
+    let masked = (key >> k) << k;
+    if masked == 0 {
+        return done;
+    }
+    let m = masked.trailing_zeros() as usize;
+    let ja = if m == 0 { 0 } else { (m - 1).max(k) };
+    ja.min(done)
+}
+
+/// Add state i of `src`, shifted by e degrees (negated if `neg`), into entry
+/// idx of `nt` whose window is [nlo, nhi].
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn add_block(src: &Table, i: usize, nt: &mut Table, idx: usize, nlo: u32, nhi: u32, e: u32, neg: bool, nm: usize, m: Mod) {
+    let (lo, hi) = src.window(i);
+    let a0 = (lo + e).max(nlo);
+    let a1 = (hi + e).min(nhi);
+    if a0 > a1 {
+        return;
+    }
+    let so = (a0 - e - lo) as usize;
+    let dof = (a0 - nlo) as usize;
+    let len = (a1 - a0 + 1) as usize;
+    for mm in 0..nm {
+        nt.accumulate(idx, mm, dof, &src.coef(i, mm)[so..so + len], neg, m);
+    }
+}
+
+/// Column j of row s for one state in the parked pass: targets go to the table
+/// of their next active column. States here always have bit j or j+1 set.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn step_parked(tab: &Table, i: usize, pend: &mut [Table], j: usize, s: usize, p: &Params, m: Mod, done: usize) {
+    let nm = p.moments;
+    let bj: u128 = 1 << j;
+    let bj1: u128 = 1 << (j + 1);
+    let key = tab.key(i);
+    let (lo, _hi) = tab.window(i);
+    let q = key & bj != 0;
+    let a = key & bj1 != 0;
+    let base = key & !(bj | bj1);
+    let mut tr: [(u128, u32, bool, bool); 3] = [(0, 0, false, false); 3];
+    let ntr = match (q, a, p.model) {
+        (true, false, _) => {
+            tr[0] = (bj, 0, false, false);
+            1
+        }
+        (false, true, _) => {
+            tr[0] = (bj, 1, false, false);
+            tr[1] = (bj1, 1, false, true);
+            tr[2] = (bj | bj1, 2, false, false);
+            3
+        }
+        (true, true, Model::Bond) => {
+            tr[0] = (bj, 1, true, false);
+            tr[1] = (bj | bj1, 1, false, false);
+            tr[2] = (bj | bj1, 2, true, false);
+            3
+        }
+        (true, true, Model::Site) if p.nosign => {
+            tr[0] = (bj, 0, false, false);
+            tr[1] = (bj | bj1, 1, false, false);
+            tr[2] = (bj | bj1, 1, false, false);
+            3
+        }
+        (true, true, Model::Site) => {
+            tr[0] = (bj, 0, true, false);
+            1
+        }
+        (false, false, _) => unreachable!("parked state inactive at its column"),
+    };
+    for &(bits, e, neg, unique) in &tr[..ntr] {
+        let neg = neg && !p.nosign;
+        let nkey = base | bits;
+        let na = next_active(nkey, j + 1, done);
+        let nt = &mut pend[na];
+        let (idx, nlo, nhi) = if unique {
+            match bound_with(nkey, j + 1, s, p, Some(lo + e)) {
+                Some((nlo, nhi)) => (nt.push_unique(nkey, nlo, nhi), nlo, nhi),
+                None => continue,
+            }
+        } else {
+            match nt.get_or_insert(nkey, |k| bound(k, j + 1, s, p)) {
+                Some(x) => x,
+                None => continue,
+            }
+        };
+        add_block(tab, i, nt, idx, nlo, nhi, e, neg, nm, m);
+    }
+}
+
 /// Process column j of row s for one source state into the target table.
 #[inline]
 fn step_one(tab: &Table, i: usize, nt: &mut Table, j: usize, s: usize, p: &Params, m: Mod) {
@@ -909,6 +1040,7 @@ fn main() {
     let mut mirror = true;
     let mut threads = 4usize;
     let mut block = 8usize;
+    let mut park = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -933,6 +1065,7 @@ fn main() {
             "--no-x" => moments = 1,
             "--loose" => loose = true,
             "--no-mirror" => mirror = false,
+            "--park" => park = true,
             "--block" => {
                 block = args[i + 1].parse().unwrap();
                 i += 1;
@@ -956,7 +1089,7 @@ fn main() {
     let slack = std::env::var("DP_SLACK").is_ok();
     let nosign = std::env::var("DP_NOSIGN").is_ok();
     let cheap_lo = std::env::var("DP_CHEAP_LO").is_ok();
-    let p = Params { n, model, tmax, moments, verbose, loose, mirror, threads, shards, slack, nosign, cheap_lo, block };
+        let p = Params { n, model, tmax, moments, verbose, loose, mirror, threads, shards, slack, nosign, cheap_lo, block, park };
     let primes = modp::primes(first_prime + nprimes);
     for &pr in &primes[first_prime..] {
         let m = Mod::new(pr);

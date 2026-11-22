@@ -19,6 +19,7 @@ Options:
 | `--bond` / `--site` | Model (bond is the default) |
 | `--primes k`, `--first-prime i` | Run k primes starting at index i, from the largest primes below 2^62 |
 | `--threads T` | T = 1 uses streaming steps that free each source shard once it is processed. T > 1 (default 4) runs sharded parallel blocks. Under heavy CPU contention T = 1 is faster. |
+| `--park` | Single-thread mode only. Each state waits in the table of the next column that changes it, so untouched states are never copied. Half the column steps and about 11% faster, but about 46% more peak memory (n = 120). Use it when time, not memory, binds. |
 | `--block K` | Parallel mode only: steps per synchronization (default 8). A block of K column steps touches only K + 1 key bits, so states are sharded by the other bits and each thread runs the block independently. |
 | `--no-x` | Store only M₀; outputs S, μ₀₁ and μ₀₂, using a third of the memory |
 | `--no-mirror` | Disable the mirror reduction (testing) |

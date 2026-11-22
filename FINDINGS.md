@@ -92,6 +92,7 @@ Each change below was verified to give identical series: the order-15 fixture, a
 | `--features u16` (15-bit primes, Jensen's choice) | At n = 110 with `--no-x`: 9.3 MiB, against 12.2 MiB for u32 and 18.1 MiB for u64; four times the primes of u64 |
 | Drop the redundant zero check; copy identity blocks without zero-filling | About −3% (n = 120, idle machine: 30.6 s → 29.7 s) |
 | Rejected: `-C target-cpu=native` (AVX2) | About −2–3%; not worth the loss of portable binaries |
+| `--park` (opt-in): each state waits in the table of the next column that changes it, so untouched states are never copied | At n = 120: state-steps 54M → 26M, time −11% (30.4 s → 27.2 s), peak memory +46% (104 → 152 MiB). Pending tables keep hash slots and untrimmed windows until they are processed. Use it when time binds. |
 
 **Profile on the idle machine** (bond, n = 120, one prime, single thread, 30.0 s in total):
 
@@ -103,8 +104,9 @@ Each change below was verified to give identical series: the order-15 fixture, a
 | Row ends | about 1.3 s | 4% |
 
 The next speed-ups worth trying:
-- **Park untouched states.** About half of all state-steps are pure copies of states the current column does not touch. Leaving those states in place until the kink reaches them would avoid the copies.
+- **Make `--park` memory-neutral** by trimming pending tables as they fill.
 - **Fewer cache misses** in the target hash.
+- **Cheaper bounds** for hashed targets.
 
 **Bound tightness.** A diagnostic mode counts graphs without signs, so nothing cancels.
 - Even then, the interval-cover lower bound on degree placed is 1–3 below the true structural minimum for 74% of states at n = 90. The looseness is structural, not cancellation.
