@@ -57,7 +57,7 @@ TARGET = {"S": "gamma", "mu01": "gamma+nu_par", "mu02": "gamma+2nu_par",
           "mu20": "gamma+2nu_perp", "R1": "nu_par", "R2": "2nu_perp"}
 
 
-def analyse(ser, T, guess, Ks=(2, 3), Ls=range(0, 11, 2), span=10, names=None):
+def analyse(ser, T, guess, Ks=(2, 3), Ls=range(0, 11, 2), span=10, names=None, mstep=1, max_per=None):
     out = []
     der = derived(ser, T)
     allser = {"S": ser["S"][:T + 1], "mu01": ser["mu01"][:T + 1], "mu02": ser["mu02"][:T + 1],
@@ -67,7 +67,7 @@ def analyse(ser, T, guess, Ks=(2, 3), Ls=range(0, 11, 2), span=10, names=None):
         Tn = len(s)
         for K in Ks:
             t0 = time.time()
-            ests = da.ensemble(s, K, Ls, range(Tn - span, Tn + 1), guess, defect_radius=0.002)
+            ests = da.ensemble(s, K, Ls, range(Tn - span, Tn + 1, mstep), guess, max_per=max_per, defect_radius=0.002)
             summ = da.summarize(ests, f"{name} K={K}")
             if summ:
                 summ.update({"series": name, "K": K, "terms": T, "quantity": TARGET[name],
@@ -85,13 +85,19 @@ def main():
     ap.add_argument("--guess", type=float, default=None)
     ap.add_argument("--names", nargs="*")
     ap.add_argument("--K", type=int, nargs="*", default=[2, 3])
+    ap.add_argument("--Lmax", type=int, default=10)
+    ap.add_argument("--Lstep", type=int, default=2)
+    ap.add_argument("--span", type=int, default=10)
+    ap.add_argument("--mstep", type=int, default=1)
+    ap.add_argument("--max-per", type=int, default=None, help="degree assignments per (M, L)")
     ap.add_argument("-o")
     a = ap.parse_args()
     ser = json.load(open(a.series_json))[a.key]
     guess = a.guess or (0.6447 if ser["model"] == "bond" else 0.70549)
     results = []
     for T in a.terms:
-        results += analyse(ser, T, guess, Ks=a.K, names=a.names)
+        results += analyse(ser, T, guess, Ks=a.K, names=a.names, Ls=range(0, a.Lmax + 1, a.Lstep),
+                           span=a.span, mstep=a.mstep, max_per=a.max_per)
         if a.o:
             json.dump(results, open(a.o, "w"), indent=1)
 

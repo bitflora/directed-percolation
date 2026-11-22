@@ -51,12 +51,15 @@ pub struct Params {
     pub threads: usize,
     pub shards: usize,
     pub slack: bool,
+    pub nosign: bool, // diagnostics only: count graphs without signs (no cancellation)
 }
 
 pub static BOUND_CALLS: AtomicU64 = AtomicU64::new(0);
 pub static STATE_STEPS: AtomicU64 = AtomicU64::new(0);
 /// Diagnostics (DP_SLACK=1): window slack at row ends.
 pub static SLACK: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+/// Diagnostics: nanoseconds in step loops, in finish(), and identity copies.
+pub static PROF: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 /// Minimum number of windows of length d covering intervals [l, r] (r - l <= 1),
 /// a lower bound on the number of distinct descendants (ancestors) after d
@@ -95,6 +98,40 @@ fn cover_linear(pts: &[(i32, i32)], d: i32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn params(n: usize, model: Model) -> Params {
+        let tmax = if model == Model::Bond { n / 2 } else { (n + 1) / 2 };
+        Params { n, model, tmax, moments: 3, verbose: false, loose: false, mirror: true,
+                 threads: 1, shards: 1, slack: false, nosign: false }
+    }
+
+    #[test]
+    fn mask_bound_matches_reference() {
+        let mut seed = 987654321u64;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed >> 33
+        };
+        for model in [Model::Bond, Model::Site] {
+            for _ in 0..200000 {
+                let n = 20 + (rnd() % 200) as usize;
+                let p = params(n, model);
+                let width = 1 + (rnd() % 60) as usize;
+                let mut key: u128 = 0;
+                for b in 0..width {
+                    if rnd() % 3 == 0 {
+                        key |= 1u128 << b;
+                    }
+                }
+                if key == 0 {
+                    continue;
+                }
+                let j = (rnd() % (width as u64 + 2)) as usize;
+                let s = (rnd() % (p.tmax as u64)) as usize;
+                assert_eq!(bound_inner(key, j, s, &p), bound_ref(key, j, s, &p), "key {key:b} j {j} s {s} n {n}");
+            }
+        }
+    }
+
     #[test]
     fn cover_matches_linear() {
         let mut seed = 12345u64;
@@ -118,7 +155,103 @@ mod tests {
 /// Bounds for a state at kink j of row s (transition s -> s+1).
 /// Returns None if the state cannot contribute at order <= n or row <= tmax.
 pub fn bound(key: u128, j: usize, s: usize, p: &Params) -> Option<(u32, u32)> {
+    if p.verbose {
+        let t0 = Instant::now();
+        let r = bound_inner(key, j, s, p);
+        PROF[3].fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        return r;
+    }
+    bound_inner(key, j, s, p)
+}
+
+/// Greedy window cover on bit masks. Points are intervals [l, l] (bit l of
+/// `fixed`) or [l, l+1] (bit l of `fuzzy`). Equivalent to `cover`, but each
+/// window costs a few u128 operations instead of a scan over the points.
+#[inline(always)]
+fn cover_mask(mut fixed: u128, mut fuzzy: u128, d: u32) -> u32 {
+    let mut count = 0u32;
+    loop {
+        let r = fixed | (fuzzy << 1); // right ends
+        if r == 0 {
+            return count;
+        }
+        count += 1;
+        let e = r.trailing_zeros() + d; // window [r0, r0 + d]
+        if e >= 127 {
+            return count;
+        }
+        // drop every point whose left end is <= e
+        let keep = !((2u128 << e) - 1);
+        fixed &= keep;
+        fuzzy &= keep;
+    }
+}
+
+/// Mask-based bound (see `bound_ref` for the point-list version it replaces).
+/// Positions are shifted by +1 so that the fuzzy parent interval of column 0,
+/// [-1, 0], starts at bit 0. With that shift:
+///   past:   fixed = key bits >= j, fuzzy = key bits < j
+///   future: fixed = (key bits <= j) << 1, fuzzy = key bits > j
+#[inline]
+fn bound_inner(key: u128, j: usize, s: usize, p: &Params) -> Option<(u32, u32)> {
     BOUND_CALLS.fetch_add(1, Ordering::Relaxed);
+    let below_j: u128 = if j >= 128 { !0 } else { (1u128 << j) - 1 };
+    let upto_j: u128 = if j >= 127 { !0 } else { (2u128 << j) - 1 };
+    let past_fixed = key & !below_j;
+    let past_fuzzy = key & below_j;
+    let fut_fixed = (key & upto_j) << 1;
+    let fut_fuzzy = key & !upto_j;
+    let nfixed = (key & upto_j).count_ones();
+    let nunproc = (key & !upto_j).count_ones();
+
+    let mut lo: u32 = nfixed;
+    let mut d = 0u32;
+    while (d as usize) < s {
+        let g = cover_mask(past_fixed, past_fuzzy, d);
+        if g <= 2 {
+            lo += 2 * (s as u32 - d);
+            break;
+        }
+        lo += g;
+        d += 1;
+    }
+    if lo as usize > p.n {
+        return None;
+    }
+    let g0 = cover_mask(fut_fixed, fut_fuzzy, 0);
+    let mut extra: u32 = match p.model {
+        Model::Bond => nunproc,
+        Model::Site => g0 - nfixed.min(g0),
+    };
+    let mut rmin = 0u32;
+    loop {
+        let g = if rmin == 0 { g0 } else { cover_mask(fut_fixed, fut_fuzzy, rmin) };
+        if g <= 1 {
+            break;
+        }
+        if p.model == Model::Bond || rmin >= 1 {
+            extra += g;
+        }
+        rmin += 1;
+    }
+    if p.model == Model::Site && rmin >= 1 {
+        extra += 1;
+    }
+    if s + 1 + rmin as usize > p.tmax {
+        return None;
+    }
+    if p.loose {
+        return Some((0, p.n as u32));
+    }
+    if (lo + extra) as usize > p.n {
+        return None;
+    }
+    Some((lo, p.n as u32 - extra))
+}
+
+/// Reference implementation of the bound on explicit point lists (kept for tests).
+#[allow(dead_code)]
+fn bound_ref(key: u128, j: usize, s: usize, p: &Params) -> Option<(u32, u32)> {
     // future points: row s+1 positions (fixed) or fuzzy images of unprocessed vertices
     // past points: row s positions (fixed unprocessed, or fuzzy parents of fixed b's)
     let mut fut: [(i32, i32); 130] = [(0, 0); 130];
@@ -369,6 +502,7 @@ pub fn run(p: &Params, m: Mod) -> Raw {
                 // streaming: free each source shard as soon as it is processed,
                 // so the peak is about max(old, new) instead of old + new
                 let est = layer_len(&layer) / nshards + 16;
+                let ts = Instant::now();
                 let mut new: Layer = (0..nshards).map(|_| Table::new(nm, est)).collect();
                 for si in 0..layer.len() {
                     let src = std::mem::replace(&mut layer[si], Table::new(nm, 0));
@@ -381,9 +515,12 @@ pub fn run(p: &Params, m: Mod) -> Raw {
                         peak_bytes = peak_bytes.max(layer_bytes(&layer) + layer_bytes(&new));
                     }
                 }
+                PROF[0].fetch_add(ts.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                let tf = Instant::now();
                 for t in new.iter_mut() {
                     t.finish();
                 }
+                PROF[1].fetch_add(tf.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 peak_states = peak_states.max(layer_len(&new));
                 layer = new;
                 continue;
@@ -473,6 +610,13 @@ pub fn run(p: &Params, m: Mod) -> Raw {
             STATE_STEPS.load(Ordering::Relaxed)
         );
     }
+    if p.verbose {
+        let g = |k: usize| PROF[k].load(Ordering::Relaxed);
+        eprintln!(
+            "profile: step loops {:.2}s  finish {:.2}s  identity copies {}  in bound {:.2}s",
+            g(0) as f64 * 1e-9, g(1) as f64 * 1e-9, g(2), g(3) as f64 * 1e-9
+        );
+    }
     if p.slack {
         let g = |k: usize| SLACK[k].load(Ordering::Relaxed);
         eprintln!(
@@ -519,8 +663,11 @@ fn row_end_one(tab: &Table, i: usize, nt: &mut Table, sc: &mut Scratch, t: usize
         let first = c.iter().position(|&x| x != 0);
         let last = c.iter().rposition(|&x| x != 0);
         SLACK[0].fetch_add(1, Ordering::Relaxed);
+        // slack of the trimmed window against the bound the state was created with
+        let blo = bound(key, 127, t - 1, p).map(|b| b.0).unwrap_or(lo);
         match (first, last) {
             (Some(f), Some(l)) => {
+                let f = f + (lo - blo.min(lo)) as usize;
                 SLACK[1 + f.min(3)].fetch_add(1, Ordering::Relaxed);
                 SLACK[5].fetch_add((len - 1 - l) as u64, Ordering::Relaxed);
                 SLACK[6].fetch_add(len as u64, Ordering::Relaxed);
@@ -617,6 +764,7 @@ fn step_one(tab: &Table, i: usize, nt: &mut Table, j: usize, s: usize, p: &Param
     let base = key & !(bj | bj1);
     if !q && !a {
         // vertex absent and nothing pending: identity, same bound, unique target
+        PROF[2].fetch_add(1, Ordering::Relaxed);
         let idx = nt.push_unique(key, lo, hi);
         for mm in 0..nm {
             nt.coef_mut(idx, mm).copy_from_slice(tab.coef(i, mm));
@@ -644,6 +792,12 @@ fn step_one(tab: &Table, i: usize, nt: &mut Table, j: usize, s: usize, p: &Param
             tr[2] = (bj | bj1, 2, true, false);
             3
         }
+        (true, true, Model::Site) if p.nosign => {
+            tr[0] = (bj, 0, false, false);
+            tr[1] = (bj | bj1, 1, false, false);
+            tr[2] = (bj | bj1, 1, false, false);
+            3
+        }
         (true, true, Model::Site) => {
             // L: (1,0) -1 ; R: (1,1) +p ; LR: (1,1) -p : the last two cancel
             tr[0] = (bj, 0, true, false);
@@ -652,6 +806,7 @@ fn step_one(tab: &Table, i: usize, nt: &mut Table, j: usize, s: usize, p: &Param
         (false, false, _) => unreachable!(),
     };
     for &(bits, e, neg, unique) in &tr[..ntr] {
+        let neg = neg && !p.nosign;
         let nkey = base | bits;
         let (idx, nlo, nhi) = if unique {
             match bound(nkey, j + 1, s, p) {
@@ -768,7 +923,8 @@ fn main() {
     .max(1);
     let shards = if threads <= 1 { 64 } else { threads * 8 };
     let slack = std::env::var("DP_SLACK").is_ok();
-    let p = Params { n, model, tmax, moments, verbose, loose, mirror, threads, shards, slack };
+    let nosign = std::env::var("DP_NOSIGN").is_ok();
+    let p = Params { n, model, tmax, moments, verbose, loose, mirror, threads, shards, slack, nosign };
     let primes = modp::primes(first_prime + nprimes);
     for &pr in &primes[first_prime..] {
         let m = Mod::new(pr);

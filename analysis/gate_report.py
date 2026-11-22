@@ -1,15 +1,23 @@
-"""Summarize gate.py output: estimates against the number of terms, comparison
-with Jensen 1999, and a fit of the approximant spread against the number of
-terms, projected to longer series.
+"""Summarize gate.py output for the M2 precision-gain gate.
 
-Usage: python gate_report.py results/analysis/bond146.json [more.json ...] -o report.md
+For every series and number of terms T, estimates from K = 2 and K = 3 are
+pooled (median of the two medians). Two error proxies are reported:
+
+* spread: half the 16-84% range of the approximant ensemble at fixed T, and
+* drift: the change of the central estimate since the previous T.
+
+The approximant spread at fixed T understates the true error when the
+estimates still drift with T (as they do for this problem), so the gate uses
+the drift. log10(drift per term) is fitted linearly against T and projected.
+
+Usage: python gate_report.py results/analysis/bond146_gate.json [...] -o report.md
 """
 import argparse
 import json
 import math
 from collections import defaultdict
 
-# Jensen 1999 (S01) bond estimates, eq. (15) and section 5
+# Jensen 1999 (S01) bond estimates
 J99 = {
     "xc": (0.644700185, 5e-9),
     "gamma": (2.277730, 5e-6),
@@ -19,7 +27,6 @@ J99 = {
     "gamma+2nu_par": (5.74539, 1e-5),
     "gamma+2nu_perp": (4.471425, 1.5e-5),
 }
-J99_SITE = {"xc": (0.70548522, 4e-8)}
 
 
 def fit_line(xs, ys):
@@ -32,50 +39,78 @@ def fit_line(xs, ys):
     return my - b * mx, b
 
 
+def pooled(rows):
+    """{(series, T): dict(xc, exp, spread_x, spread_e, quantity, count)} pooling K."""
+    by = defaultdict(list)
+    for r in rows:
+        by[(r["series"], r["terms"])].append(r)
+    out = {}
+    for k, rs in by.items():
+        xs = sorted(r["xc"] for r in rs)
+        es = sorted(r["exponent"] for r in rs)
+        mid = lambda v: v[len(v) // 2] if len(v) % 2 else (v[len(v) // 2 - 1] + v[len(v) // 2]) / 2
+        out[k] = {
+            "xc": mid(xs), "exp": mid(es),
+            "sx": max(r["xc_spread"] for r in rs), "se": max(r["exponent_spread"] for r in rs),
+            "kdiff_x": max(xs) - min(xs), "kdiff_e": max(es) - min(es),
+            "quantity": rs[0]["quantity"], "count": sum(r["count"] for r in rs),
+        }
+    return out
+
+
 def main():
+    import sys
+    sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
     ap.add_argument("inputs", nargs="+")
     ap.add_argument("-o")
-    ap.add_argument("--model", default="bond")
     a = ap.parse_args()
     rows = []
     for p in a.inputs:
         rows += json.load(open(p))
-    ref = J99 if a.model == "bond" else J99_SITE
-    by = defaultdict(list)
-    for r in rows:
-        by[(r["series"], r["K"])].append(r)
-    out = []
-    out.append("| Series | Quantity | K | Terms | Approximants | x_c | spread | Exponent | spread | Exponent − J99 |")
+    P = pooled(rows)
+    names = ["S", "mu01", "mu02", "mu20", "R1", "R2"]
+    Ts = sorted({t for (_, t) in P})
+    out = ["## Central estimates against the number of terms (K = 2 and 3 pooled)", ""]
+    out.append("| Series | Quantity | T | approximants | x_c | exponent | spread | K2–K3 difference | drift since previous T | exponent − J99 |")
     out.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
-    for (name, K), rs in sorted(by.items()):
-        for r in sorted(rs, key=lambda r: r["terms"]):
-            q = r["quantity"]
-            dref = ""
-            if q in ref:
-                dref = f"{r['exponent'] - ref[q][0]:+.2e}"
-            out.append(
-                f"| {name} | {q} | {K} | {r['terms']} | {r['count']} | {r['xc']:.10f} | {r['xc_spread']:.1e} | "
-                f"{r['exponent']:.7f} | {r['exponent_spread']:.1e} | {dref} |"
-            )
-    out.append("")
-    # spread against terms: fit log10(spread) = a + b T, per series, pooled over K
-    out.append("Fits of log10(spread) against number of terms T, pooled over K (projection only):")
-    out.append("")
-    out.append("| Series | Quantity | slope per 10 terms (x_c) | slope per 10 terms (exponent) | projected exponent spread at 171 / 200 / 230 |")
-    out.append("| --- | --- | --- | --- | --- |")
-    names = sorted({r["series"] for r in rows})
+    fits = {}
     for name in names:
-        rs = [r for r in rows if r["series"] == name and r["exponent_spread"] > 0 and r["xc_spread"] > 0]
-        if len({r["terms"] for r in rs}) < 2:
+        prev = None
+        drifts = []
+        for T in Ts:
+            r = P.get((name, T))
+            if not r:
+                continue
+            q = r["quantity"]
+            drift = abs(r["exp"] - prev["exp"]) / (T - prev["T"]) if prev else None
+            if drift:
+                drifts.append((T, drift))
+            dj = f"{r['exp'] - J99[q][0]:+.1e}" if q in J99 else ""
+            out.append(
+                f"| {name} | {q} | {T} | {r['count']} | {r['xc']:.10f} | {r['exp']:.7f} | {r['se']:.1e} | "
+                f"{r['kdiff_e']:.1e} | {'' if drift is None else f'{drift:.1e}/term'} | {dj} |"
+            )
+            prev = dict(r, T=T)
+        if len(drifts) >= 2:
+            f = fit_line([t for t, _ in drifts], [math.log10(d) for _, d in drifts])
+            fits[name] = (f, drifts)
+    out.append("")
+    out.append("## Drift fit and projection")
+    out.append("")
+    out.append("log10(drift per term) = a + b·T. If the drift keeps decaying geometrically, the remaining error after T terms is about drift(T)/(1 − 10^b) per term summed to infinity, i.e. drift(T)·10^b/(1 − 10^b).")
+    out.append("")
+    out.append("| Series | b (per term) | error factor per 10 terms | projected remaining error at T = 146 / 171 / 200 / 230 | gain 171 → 230 |")
+    out.append("| --- | --- | --- | --- | --- |")
+    for name, (f, drifts) in fits.items():
+        a0, b = f
+        if b >= 0:
+            out.append(f"| {name} | {b:+.4f} | not decaying | — | — |")
             continue
-        T = [r["terms"] for r in rs]
-        fx = fit_line(T, [math.log10(r["xc_spread"]) for r in rs])
-        fe = fit_line(T, [math.log10(r["exponent_spread"]) for r in rs])
-        proj = " / ".join(f"{10 ** (fe[0] + fe[1] * t):.1e}" for t in (171, 200, 230)) if fe else ""
-        out.append(
-            f"| {name} | {rs[0]['quantity']} | {10 * fx[1]:+.2f} | {10 * fe[1]:+.2f} | {proj} |"
-        )
+        r = 10 ** b
+        rem = lambda T: 10 ** (a0 + b * T) * r / (1 - r)
+        proj = " / ".join(f"{rem(T):.1e}" for T in (146, 171, 200, 230))
+        out.append(f"| {name} | {b:+.4f} | {10 ** (-10 * b):.2f}× | {proj} | {rem(171) / rem(230):.1f}× |")
     text = "\n".join(out)
     print(text)
     if a.o:

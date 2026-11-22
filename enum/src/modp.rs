@@ -4,18 +4,28 @@
 //! used 16-bit residues), so a series needs a quarter as many runs for the
 //! same total memory-time.
 
-/// Coefficient type.
+/// Coefficient type. The default stores residues modulo 62-bit primes in u64.
+/// `--features u32` stores residues modulo 31-bit primes in u32: half the memory
+/// per coefficient, twice as many primes. Prefer it when memory, not time, binds.
+#[cfg(not(feature = "u32"))]
 pub type C = u64;
+#[cfg(feature = "u32")]
+pub type C = u32;
+
+#[cfg(not(feature = "u32"))]
+const PRIME_BITS: u32 = 62;
+#[cfg(feature = "u32")]
+const PRIME_BITS: u32 = 31;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Mod {
-    pub p: u64,
+    pub p: C,
 }
 
 impl Mod {
     pub fn new(p: u64) -> Self {
-        assert!(p < (1 << 62));
-        Mod { p }
+        assert!(p < (1u64 << PRIME_BITS));
+        Mod { p: p as C }
     }
     #[inline(always)]
     pub fn add(&self, a: C, b: C) -> C {
@@ -62,7 +72,7 @@ impl Mod {
     }
     pub fn inv(&self, a: C) -> C {
         assert!(a != 0);
-        self.pow(a, self.p - 2)
+        self.pow(a, self.p as u64 - 2)
     }
     pub fn series_mul(&self, a: &[C], b: &[C]) -> Vec<C> {
         let n = a.len().min(b.len());
@@ -139,10 +149,10 @@ fn is_prime(n: u64) -> bool {
     true
 }
 
-/// The k largest primes below 2^62, in decreasing order.
+/// The k largest primes below 2^PRIME_BITS, in decreasing order.
 pub fn primes(k: usize) -> Vec<u64> {
     let mut out = Vec::new();
-    let mut c: u64 = (1u64 << 62) - 1;
+    let mut c: u64 = (1u64 << PRIME_BITS) - 1;
     while out.len() < k {
         if is_prime(c) {
             out.push(c);

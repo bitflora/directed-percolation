@@ -52,3 +52,94 @@ The rate is 2^(1/8) = 1.0905 per term, the same as Jensen 1999's algorithm. The 
 **Bounds matter most.** Replacing the interval-cover lower bound on bonds already placed with the simple bound 2s multiplies the state count by 4.6 at n = 100.
 
 **Compute environment.** All timings were taken while another project's job (`mixlab`) occupied all 12 logical cores. Only about 3–4 GB of the 16 GB RAM was free. Multithreaded steps ran slower than single-threaded ones under this contention, because every column step waits for the slowest thread. Production therefore runs one process per prime. Absolute times overstate what the machine can do.
+
+## F3. Engine optimization results (M3, partly)
+
+Each change below was verified to give identical series: the order-15 fixture, and exact agreement with the earlier binary at order 70 for bond and site.
+
+| Change | Effect at n = 100 (single prime) |
+| --- | --- |
+| Interval-cover lower bound on degree already placed, instead of 2s | 4.6× fewer states than the simple bound |
+| Mirror reduction | Bound calls 13.7M → 5.8M; time about 1.6–2.8× lower |
+| Streaming steps (free each source shard after use) | Peak memory about −30% (no full double buffer) |
+| Drop all-zero states | Peak states −15% (bond), −26% (site) |
+| Trim each window to its nonzero range at the end of every step | Peak states −21% (bond), −31% (site) combined with the previous row; memory −8% / −19% |
+| `--features u32` (31-bit primes) | Memory −42% per run; twice as many primes |
+| Binary-search cover | No measurable change under contention |
+
+**Bound tightness.** A diagnostic mode counts graphs without signs, so nothing cancels.
+- Even then, the interval-cover lower bound on degree placed is 1–3 below the true structural minimum for 74% of states at n = 90. The looseness is structural, not cancellation.
+- Window trimming after every step already replaces that bound with the exact minimum, so the states *kept* between steps are already near-minimal. A tighter static bound would still save construction-time memory and work, because fewer doomed states would be created and windows would be allocated shorter. It would not change the state count between steps.
+- The completion bound is exact on worked examples.
+- Further large savings would need a different algorithm, for example the Zbarsky-type sparsification in REVIEW §10.1, not tighter bounds.
+
+**Profile.** With bounds computed twice instead of once, run time rises from 12.2 s to 15.4 s. So hashed-target bounds take about a quarter of the time, and all bounds roughly a third. Hashing, memory traffic and accumulation take the rest.
+
+## F4. Verified bond series to order 146
+
+[results/series/bond146.json](results/series/bond146.json) holds the exact S, μ₀₁, μ₀₂ and μ₂₀ series for bond DP on the directed square lattice to order 146 (Jensen 1999 reached 171).
+
+**Verification:**
+- The coefficients were reconstructed from four 62-bit primes and checked with the fourth.
+- The largest coefficient has 140 bits.
+- The independently computed 120-term series (three other primes) is an exact prefix.
+
+**Cost:** each prime took 31 minutes on a single thread with all cores contended, and peaked at 1.19 GB with the v4 binary.
+
+The coefficients cannot be compared term by term with Jensen's, because his series files are not available online. The checks against his series are therefore the critical-point and exponent estimates in F5.
+
+## F6. No small linear ODE (D-finiteness search)
+
+[analysis/dfinite.py](analysis/dfinite.py) solves the linear system for an ODE Σ_{i≤k} P_i(x) θⁱ f = 0 with deg P_i ≤ d modulo two 62-bit primes. It uses 10 more equations than unknowns, and was checked on a known D-finite series (central binomial coefficients, found at order 1, degree 1).
+
+For all four 146-term bond series there is no such ODE whenever (k + 1)(d + 1) ≤ 137, for k = 1 … 10. Examples of excluded sizes:
+
+| Order k | Largest degree d excluded |
+| --- | --- |
+| 1 | 67 |
+| 3 | 33 |
+| 6 | 18 |
+| 10 | 11 |
+
+This is a weak exclusion. Known D-finite lattice series often need ODEs far larger than this (the Ising χ̃⁽⁵⁾ ODE has order 33). It is reported as a baseline for the haruspicy approach (RESEARCH_PLAN M6), not as evidence of non-D-finiteness. Output: [results/analysis/dfinite_bond146.txt](results/analysis/dfinite_bond146.txt).
+
+## F5. Reproduction of the 1999 estimates and the precision-gain gate (M2)
+
+The 146-term bond series was analysed by [analysis/gate.py](analysis/gate.py) at T = 80, 90, …, 146 terms. Each estimate is the median over inhomogeneous differential approximants of order K = 2 and 3:
+- L = 0, 3, 6, 9;
+- M = T−10 … T in steps of 2;
+- up to two degree assignments per (M, L).
+
+Defective approximants are dropped: another zero of Q_K within 0.002 of x_c, or a real zero in (x_c − 0.05, x_c). The full table is in [results/analysis/bond146_gate_report.md](results/analysis/bond146_gate_report.md).
+
+**Reproduction.** At 146 terms the estimates agree with Jensen's 171-term values:
+
+| Quantity | Series | This work, T = 146 | Jensen 1999, T = 171 |
+| --- | --- | --- | --- |
+| ν∥ | μ₀₂/μ₀₁ | 1.7338449 (spread 1.6e-6) | 1.733847(6) |
+| 2ν⊥ | μ₂₀μ₀₂/μ₀₁² | 2.1937084 (spread 1.9e-6) | 2.193708(4) |
+| γ | S | 2.2777184 (spread 4.8e-6) | 2.277730(5) |
+| γ + 2ν⊥ | μ₂₀ | 4.471404 (spread 1.1e-5) | 4.471425(15) |
+| p_c | μ₀₂/μ₀₁, μ₂₀μ₀₂/μ₀₁² | 0.6447001840, 0.6447001916 | 0.644700185(5) |
+| p_c | S | 0.6447001775 | |
+
+For ν∥, ν⊥ and p_c the 146-term values already sit inside Jensen's error bars. The S, μ₀₁, μ₀₂ and μ₂₀ estimates are still drifting upward toward his values, by about 1–5 × 10⁻⁷ per term at T = 146. Jensen reported the same upward drift.
+
+**Error measure.** For every series the approximant spread at fixed T is smaller than the change between successive T. So the spread understates the error, and the gate uses the drift (change of the central estimate per term) instead.
+
+**Gate result** (provisional: the fits pass through noisy medians). log10(drift per term) was fitted linearly in T over 90–146 and extrapolated as a geometric tail:
+
+| Quantity | Error reduction per 10 terms | Projected gain 171 → 230 terms |
+| --- | --- | --- |
+| ν∥ (R1) | 1.8× | about 30× |
+| 2ν⊥ (R2) | 1.9× | about 40× |
+| γ (S) | 1.4× | about 6× |
+| γ + 2ν⊥ (μ₂₀) | 1.1× | about 2× |
+
+The plan's criterion was a 3× gain at 230 terms or 2× at 200. It is met comfortably for ν∥, ν⊥, γ and p_c; μ₂₀ alone converges too slowly to matter.
+
+**Verdict: the M2 gate is passed.** Extending the series to about 200–230 terms should sharpen ν∥ and ν⊥ by roughly one order of magnitude beyond the 1999 values.
+
+**Caveats:**
+- The extrapolations assume the drift keeps decaying geometrically.
+- Our projected remaining error at 171 terms (about 2 × 10⁻⁷ for ν∥) is much smaller than Jensen's quoted ±6 × 10⁻⁶. Either his error bars were conservative or the drift proxy is optimistic; a longer series is what will tell.

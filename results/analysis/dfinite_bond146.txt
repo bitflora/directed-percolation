@@ -1,0 +1,56 @@
+bond S: 147 terms, margin 10, primes 4611686018427387787 and 4611686018427387847
+k  largest d excluded  unknowns
+ 0   136    137   none (both primes)
+ 1    67    136   none (both primes)
+ 2    44    135   none (both primes)
+ 3    33    136   none (both primes)
+ 4    26    135   none (both primes)
+ 5    21    132   none (both primes)
+ 6    18    133   none (both primes)
+ 7    16    136   none (both primes)
+ 8    14    135   none (both primes)
+ 9    12    130   none (both primes)
+10    11    132   none (both primes)
+No ODE of order k with polynomial degree <= the listed d exists for this series (mod these primes).
+bond mu01: 147 terms, margin 10, primes 4611686018427387787 and 4611686018427387847
+k  largest d excluded  unknowns
+ 0   136    137   none (both primes)
+ 1    67    136   none (both primes)
+ 2    44    135   none (both primes)
+ 3    33    136   none (both primes)
+ 4    26    135   none (both primes)
+ 5    21    132   none (both primes)
+ 6    18    133   none (both primes)
+ 7    16    136   none (both primes)
+ 8    14    135   none (both primes)
+ 9    12    130   none (both primes)
+10    11    132   none (both primes)
+No ODE of order k with polynomial degree <= the listed d exists for this series (mod these primes).
+bond mu02: 147 terms, margin 10, primes 4611686018427387787 and 4611686018427387847
+k  largest d excluded  unknowns
+ 0   136    137   none (both primes)
+ 1    67    136   none (both primes)
+ 2    44    135   none (both primes)
+ 3    33    136   none (both primes)
+ 4    26    135   none (both primes)
+ 5    21    132   none (both primes)
+ 6    18    133   none (both primes)
+ 7    16    136   none (both primes)
+ 8    14    135   none (both primes)
+ 9    12    130   none (both primes)
+10    11    132   none (both primes)
+No ODE of order k with polynomial degree <= the listed d exists for this series (mod these primes).
+bond mu20: 147 terms, margin 10, primes 4611686018427387787 and 4611686018427387847
+k  largest d excluded  unknowns
+ 0   136    137   none (both primes)
+ 1    67    136   none (both primes)
+ 2    44    135   none (both primes)
+ 3    33    136   none (both primes)
+ 4    26    135   none (both primes)
+ 5    21    132   none (both primes)
+ 6    18    133   none (both primes)
+ 7    16    136   none (both primes)
+ 8    14    135   none (both primes)
+ 9    12    130   none (both primes)
+10    11    132   none (both primes)
+No ODE of order k with polynomial degree <= the listed d exists for this series (mod these primes).

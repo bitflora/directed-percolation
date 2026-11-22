@@ -56,8 +56,10 @@ def _theta_powers(a, K):
     return [[base[n] * (n ** i) for n in range(len(a))] for i in range(K + 1)]
 
 
-def approximant(a, K, L, degs, theta=None):
-    """Solve one DA. `a` are exact ints, len(a) >= M. Returns (Q list, P) as arb lists or None."""
+def approximant(a, K, L, degs, theta=None, bias=None):
+    """Solve one DA. `a` are exact ints or fractions, len(a) >= M.
+    With `bias` (a Fraction or arb), Q_K is forced to vanish there and one
+    fewer series coefficient is matched. Returns (Q list, P) as arb lists or None."""
     flint.ctx.prec = PREC_BITS
     M = sum(d + 1 for d in degs) + L  # unknowns after fixing Q_K[0] = 1
     if M > len(a):
@@ -75,7 +77,8 @@ def approximant(a, K, L, degs, theta=None):
     assert len(cols) == M, (len(cols), M)
     zero = flint.arb(0)
     rows = []
-    for n in range(M):
+    nmatch = M - 1 if bias is not None else M
+    for n in range(nmatch):
         row = []
         for col in cols:
             if col[0] == "q":
@@ -84,9 +87,21 @@ def approximant(a, K, L, degs, theta=None):
             else:
                 row.append(flint.arb(-1) if col[1] == n else zero)
         rows.append(row)
+    rhs = [-theta[K][n] for n in range(nmatch)]
+    if bias is not None:
+        xb = _to_arb(bias)
+        # Q_K(xb) = 1 + sum_{k>=1} q_{K,k} xb^k = 0
+        row = []
+        for col in cols:
+            if col[0] == "q" and col[1] == K:
+                row.append(xb ** col[2])
+            else:
+                row.append(zero)
+        rows.append(row)
+        rhs.append(flint.arb(-1))
     A = flint.arb_mat(rows)
     # the fixed Q_K[0] = 1 term goes to the right-hand side
-    b = flint.arb_mat([[-theta[K][n]] for n in range(M)])
+    b = flint.arb_mat([[v] for v in rhs])
     try:
         sol = A.solve(b)
     except (ZeroDivisionError, ValueError):
@@ -149,6 +164,34 @@ def analyse_one(a, K, L, degs, guess, theta=None, window=0.05):
                     exponent=float(lam.mid()), others=others)
 
 
+def biased_exponent(a, K, L, degs, xc, theta=None):
+    """Exponent at a fixed critical point xc (Fraction), from a biased DA."""
+    res = approximant(a, K, L, degs, theta, bias=xc)
+    if res is None:
+        return None
+    Q, P = res
+    x = _to_arb(xc)
+    qk = flint.arb_poly(Q[K])
+    dq = qk.derivative()
+    mu = K - 1 - flint.arb_poly(Q[K - 1])(x) / (x * dq(x))
+    lam = -mu
+    if not _rel_ok(lam, 10):
+        return None
+    return float(lam.mid())
+
+
+def biased_ensemble(a, K, Ls, Ms, xc):
+    theta = _theta_powers(a, K)
+    out = []
+    for M in Ms:
+        for L in Ls:
+            for degs in degree_sets(M, K, L):
+                v = biased_exponent(a, K, L, degs, xc, theta)
+                if v is not None and abs(v) < 50:
+                    out.append(v)
+    return out
+
+
 def degree_sets(M, K, L):
     """All (N_0..N_K) with sum(N_i+1) = M - L and max-min <= 1."""
     total = M - L
@@ -167,7 +210,7 @@ def degree_sets(M, K, L):
 def ensemble(a, K, Ls, Ms, guess, max_per=None, defect_radius=0.01):
     """Run approximants over (L, M, degree assignment). Returns list of Estimate,
     dropping defective ones (another zero of Q_K within defect_radius of x_c,
-    or a real zero in (0, x_c))."""
+    or a real zero in (x_c - 0.05, x_c))."""
     theta = _theta_powers(a, K)
     out = []
     for M in Ms:
@@ -183,7 +226,9 @@ def ensemble(a, K, Ls, Ms, guess, max_per=None, defect_radius=0.01):
                 for r in e.others:
                     if abs(r - e.xc) < defect_radius:
                         bad = True
-                    if abs(r.imag) < 1e-6 and 0 < r.real < e.xc:
+                    # a spurious real singularity just below x_c would
+                    # dominate the approach to x_c; ones far away are harmless
+                    if abs(r.imag) < 1e-6 and e.xc - 0.05 < r.real < e.xc:
                         bad = True
                 if not bad:
                     out.append(e)

@@ -1,6 +1,15 @@
 # Research plan: extending the 1+1 directed percolation series
 
-Status: proposed methodology, November 21, 2026. Nothing has been implemented or computed. The plan follows the prior-art assessment in [REVIEW.md](REVIEW.md); source IDs refer to [SOURCES.md](SOURCES.md).
+Status, November 22, 2026: M0 done, M1 done to order 146 (bond), M2 tooling done and the gate under way, M3 partly done, M6 tooling started. Results are in [FINDINGS.md](FINDINGS.md). The plan follows the prior-art assessment in [REVIEW.md](REVIEW.md); source IDs refer to [SOURCES.md](SOURCES.md).
+
+| Milestone | Status |
+| --- | --- |
+| M0 ground truth | Done: three independent exact methods agree to order 15 (F1) |
+| M1 reimplementation | Done in [enum/](enum/README.md); verified bond series to 120 and 146 terms. The 171/158 reproduction was not run: about 10 GB, or 2.6 h per prime on the contended machine |
+| M2 analysis and gate | Toolchain done ([analysis/da.py](analysis/da.py), [gate.py](analysis/gate.py), [gate_report.py](analysis/gate_report.py)); gate results in FINDINGS |
+| M3 engineering | Partly done: shape, mirror, zero-state and window-trimming reductions; u32 build; streaming steps (F2, F3). Exact contribution orders, SIMD, out-of-core and Zbarsky sparsification not yet done |
+| M4 compute decision | Open; measured projections in FINDINGS |
+| M5–M7 | Not started, except the D-finiteness search tool ([analysis/dfinite.py](analysis/dfinite.py)) |
 
 ## Goals, in priority order
 
