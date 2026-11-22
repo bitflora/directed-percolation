@@ -69,6 +69,8 @@ Each change below was verified to give identical series: the order-15 fixture, a
 | 128-bit mask cover (each window a few bit operations; checked against the point-list version on 400,000 random states) | Bound time −25%, total about −10% |
 | Single-source targets inherit the source's trimmed lower end plus the degree shift, skipping the past-cover loop | Bound time 5.2 s → 3.3–4.0 s, total about −20%, memory −5% |
 | Rejected: lower end 2s + fixed for hashed targets, relying on trimming | Peak memory +62%, no time gain |
+| Per-state bookkeeping: 8-bit window ends, 32-bit per-shard offsets | Memory −4% (u32), −9% (u32 `--no-x`) at n = 110 |
+| `--features u16` (15-bit primes, Jensen's choice) | At n = 110 with `--no-x`: 9.3 MiB, against 12.2 MiB for u32 and 18.1 MiB for u64; four times the primes of u64 |
 
 **Bound tightness.** A diagnostic mode counts graphs without signs, so nothing cancels.
 - Even then, the interval-cover lower bound on degree placed is 1–3 below the true structural minimum for 74% of states at n = 90. The looseness is structural, not cancellation.
@@ -151,6 +153,18 @@ The plan's criterion was a 3× gain at 230 terms or 2× at 200. It is met comfor
 **Caveats:**
 - The extrapolations assume the drift keeps decaying geometrically.
 - Our projected remaining error at 171 terms (about 2 × 10⁻⁷ for ν∥) is much smaller than Jensen's quoted ±6 × 10⁻⁶. Either his error bars were conservative or the drift proxy is optimistic; a longer series is what will tell.
+
+**Update with 151 and 156 terms** ([results/analysis/bond156_gate_report.md](results/analysis/bond156_gate_report.md)). The ratio-series estimates have stabilized, and γ and γ + 2ν⊥ keep rising toward Jensen's values:
+
+| Quantity | T = 146 | T = 151 | T = 156 | Jensen 1999 (171 terms) |
+| --- | --- | --- | --- | --- |
+| ν∥ (R1) | 1.7338449 | 1.7338449 | 1.7338448 (spread 7e-7) | 1.733847(6) |
+| 2ν⊥ (R2) | 2.1937084 | 2.1937081 | 2.1937080 (spread 8e-7) | 2.193708(4) |
+| γ (S) | 2.2777184 | 2.2777220 | 2.2777224 | 2.277730(5) |
+| γ + 2ν⊥ (μ₂₀) | 4.4714038 | 4.4714069 | 4.4714110 | 4.471425(15) |
+| x_c (R1 / R2) | 0.6447001840 / …1916 | 0.6447001840 / …1911 | 0.6447001839 / …1908 | 0.644700185(5) |
+
+With the 151- and 156-term points included, the drift fits give a 60× (ν∥) and 40× (2ν⊥) projected gain from 171 to 230 terms, consistent with the 146-term analysis.
 
 **Biased approximants.** Q_K is forced to vanish at x_c (K = 2, L = 0, 2, …, 10, M = 136 … 146; [analysis/biased_scan.py](analysis/biased_scan.py), output [results/analysis/bond146_biased.json](results/analysis/bond146_biased.json)). At Jensen's p_c = 0.644700185 the 146-term series gives:
 

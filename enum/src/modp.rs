@@ -7,15 +7,24 @@
 /// Coefficient type. The default stores residues modulo 62-bit primes in u64.
 /// `--features u32` stores residues modulo 31-bit primes in u32: half the memory
 /// per coefficient, twice as many primes. Prefer it when memory, not time, binds.
-#[cfg(not(feature = "u32"))]
+/// `--features u16` stores residues modulo 15-bit primes in u16 (as Jensen
+/// 1999 did): a quarter of the u64 coefficient memory, four times the primes.
+#[cfg(all(not(feature = "u32"), not(feature = "u16")))]
 pub type C = u64;
 #[cfg(feature = "u32")]
 pub type C = u32;
+#[cfg(feature = "u16")]
+pub type C = u16;
 
-#[cfg(not(feature = "u32"))]
+#[cfg(all(feature = "u32", feature = "u16"))]
+compile_error!("features u32 and u16 are mutually exclusive");
+
+#[cfg(all(not(feature = "u32"), not(feature = "u16")))]
 const PRIME_BITS: u32 = 62;
 #[cfg(feature = "u32")]
 const PRIME_BITS: u32 = 31;
+#[cfg(feature = "u16")]
+const PRIME_BITS: u32 = 15;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Mod {

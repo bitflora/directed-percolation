@@ -30,6 +30,14 @@ Each prime's line is appended to the output file as soon as it finishes, so inde
 Build variants:
 - `cargo build --release` stores residues modulo 62-bit primes in u64.
 - `cargo build --release --features u32` stores 31-bit residues in u32. That is 42% less memory per run, at the cost of twice as many primes. Prefer it when memory binds.
+- `cargo build --release --features u16` stores 15-bit residues in u16, as Jensen 1999 did. It uses the least memory and needs four times the primes of u64, so use it when memory is the only constraint.
+- Memory at n = 110, single prime:
+
+| Build | All moments | `--no-x` |
+| --- | --- | --- |
+| u64 | 41.6 MiB | 18.1 MiB |
+| u32 | 23.9 MiB | 12.2 MiB |
+| u16 | 15.1 MiB | 9.3 MiB |
 
 Diagnostic environment variables:
 - `DP_SLACK=1`: window slack against the bound.

@@ -10,9 +10,9 @@ use crate::modp::{Mod, C};
 pub struct Table {
     nm: usize,
     keys: Vec<u128>,
-    lo: Vec<u16>,
-    hi: Vec<u16>,
-    off: Vec<u64>,
+    lo: Vec<u8>,  // window ends: n <= 250, so a byte suffices
+    hi: Vec<u8>,
+    off: Vec<u32>, // per-table (per-shard) arena offset in coefficients
     pub arena: Vec<C>,
     slots: Vec<u32>, // index+1, 0 = empty
     mask: usize,
@@ -53,7 +53,7 @@ impl Table {
         self.keys.len()
     }
     pub fn bytes(&self) -> usize {
-        self.arena.capacity() * std::mem::size_of::<C>() + self.keys.capacity() * (16 + 2 + 2 + 8) + self.slots.capacity() * 4
+        self.arena.capacity() * std::mem::size_of::<C>() + self.keys.capacity() * (16 + 1 + 1 + 4) + self.is_hashed.capacity() + self.slots.capacity() * 4
     }
     #[inline(always)]
     pub fn key(&self, i: usize) -> u128 {
@@ -90,9 +90,10 @@ impl Table {
         let idx = self.keys.len();
         self.is_hashed.push(false);
         self.keys.push(key);
-        self.lo.push(lo as u16);
-        self.hi.push(hi as u16);
-        self.off.push(self.arena.len() as u64);
+        self.lo.push(lo as u8);
+        self.hi.push(hi as u8);
+        assert!(self.arena.len() < u32::MAX as usize, "shard arena exceeds 2^32 coefficients: use more shards");
+        self.off.push(self.arena.len() as u32);
         if hi >= lo {
             let len = (hi - lo + 1) as usize * self.nm;
             let need = self.arena.len() + len;
@@ -184,9 +185,9 @@ impl Table {
             }
             let lo_i = self.lo[i];
             self.keys[w] = self.keys[i];
-            self.lo[w] = lo_i + first as u16;
-            self.hi[w] = lo_i + last as u16;
-            self.off[w] = dst as u64;
+            self.lo[w] = lo_i + first as u8;
+            self.hi[w] = lo_i + last as u8;
+            self.off[w] = dst as u32;
             dst += nm * nlen;
             w += 1;
         }
