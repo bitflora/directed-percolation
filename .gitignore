@@ -3,3 +3,5 @@ results/runs/*.tmp
 enum/target_dev/
 results/*.exe
 results/runs/
+enum/target_prof/
+enum/target_u32/

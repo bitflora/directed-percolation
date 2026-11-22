@@ -52,6 +52,8 @@ pub struct Params {
     pub shards: usize,
     pub slack: bool,
     pub nosign: bool, // diagnostics only: count graphs without signs (no cancellation)
+    pub cheap_lo: bool, // experiment: lower end 2s + fixed for hashed targets, rely on trimming
+    pub block: usize,   // parallel mode: kink steps per synchronization
 }
 
 pub static BOUND_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -101,7 +103,7 @@ mod tests {
     fn params(n: usize, model: Model) -> Params {
         let tmax = if model == Model::Bond { n / 2 } else { (n + 1) / 2 };
         Params { n, model, tmax, moments: 3, verbose: false, loose: false, mirror: true,
-                 threads: 1, shards: 1, slack: false, nosign: false }
+                 threads: 1, shards: 1, slack: false, nosign: false, cheap_lo: false, block: 8 }
     }
 
     #[test]
@@ -127,7 +129,7 @@ mod tests {
                 }
                 let j = (rnd() % (width as u64 + 2)) as usize;
                 let s = (rnd() % (p.tmax as u64)) as usize;
-                assert_eq!(bound_inner(key, j, s, &p), bound_ref(key, j, s, &p), "key {key:b} j {j} s {s} n {n}");
+                assert_eq!(bound_inner(key, j, s, &p, None), bound_ref(key, j, s, &p), "key {key:b} j {j} s {s} n {n}");
             }
         }
     }
@@ -155,13 +157,20 @@ mod tests {
 /// Bounds for a state at kink j of row s (transition s -> s+1).
 /// Returns None if the state cannot contribute at order <= n or row <= tmax.
 pub fn bound(key: u128, j: usize, s: usize, p: &Params) -> Option<(u32, u32)> {
+    bound_with(key, j, s, p, None)
+}
+
+/// As `bound`, but with the lower end already known exactly (a target that
+/// only one source produces inherits the source's trimmed lower end plus the
+/// degree shift), which skips the past-cover loop.
+pub fn bound_with(key: u128, j: usize, s: usize, p: &Params, lo_known: Option<u32>) -> Option<(u32, u32)> {
     if p.verbose {
         let t0 = Instant::now();
-        let r = bound_inner(key, j, s, p);
+        let r = bound_inner(key, j, s, p, lo_known);
         PROF[3].fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
         return r;
     }
-    bound_inner(key, j, s, p)
+    bound_inner(key, j, s, p, lo_known)
 }
 
 /// Greedy window cover on bit masks. Points are intervals [l, l] (bit l of
@@ -193,7 +202,7 @@ fn cover_mask(mut fixed: u128, mut fuzzy: u128, d: u32) -> u32 {
 ///   past:   fixed = key bits >= j, fuzzy = key bits < j
 ///   future: fixed = (key bits <= j) << 1, fuzzy = key bits > j
 #[inline]
-fn bound_inner(key: u128, j: usize, s: usize, p: &Params) -> Option<(u32, u32)> {
+fn bound_inner(key: u128, j: usize, s: usize, p: &Params, lo_known: Option<u32>) -> Option<(u32, u32)> {
     BOUND_CALLS.fetch_add(1, Ordering::Relaxed);
     let below_j: u128 = if j >= 128 { !0 } else { (1u128 << j) - 1 };
     let upto_j: u128 = if j >= 127 { !0 } else { (2u128 << j) - 1 };
@@ -206,6 +215,13 @@ fn bound_inner(key: u128, j: usize, s: usize, p: &Params) -> Option<(u32, u32)> 
 
     let mut lo: u32 = nfixed;
     let mut d = 0u32;
+    if let Some(l) = lo_known {
+        lo = l;
+        d = s as u32;
+    } else if p.cheap_lo {
+        lo += 2 * s as u32;
+        d = s as u32;
+    }
     while (d as usize) < s {
         let g = cover_mask(past_fixed, past_fuzzy, d);
         if g <= 2 {
@@ -493,7 +509,8 @@ pub fn run(p: &Params, m: Mod) -> Raw {
     let mut peak_bytes = 0usize;
     for s in 0..p.tmax {
         let wmax = layer.iter().map(|t| t.max_width()).max().unwrap_or(0);
-        for j in 0..=(wmax + 1) {
+        let mut j = 0usize;
+        while j <= wmax + 1 {
             let bj: u128 = 1 << j;
             let bj1: u128 = 1 << (j + 1);
             let mask = !(bj | bj1);
@@ -523,23 +540,40 @@ pub fn run(p: &Params, m: Mod) -> Raw {
                 PROF[1].fetch_add(tf.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 peak_states = peak_states.max(layer_len(&new));
                 layer = new;
+                j += 1;
                 continue;
             }
-            let buckets = bucket(&layer, nshards, threads, |k| k & mask);
+            // Parallel: a block of steps j..jend-1 rewrites only bits j..=jend,
+            // so states that agree outside those bits never interact within the
+            // block. Shard by the untouched bits and let each thread run the
+            // whole block on its shard without synchronizing.
+            let _ = mask;
+            let jend = (j + p.block).min(wmax + 2);
+            let touched: u128 = (if jend >= 127 { !0u128 } else { (2u128 << jend) - 1 }) & !((1u128 << j) - 1);
+            let buckets = bucket(&layer, nshards, threads, |k| k & !touched);
             let src = &layer;
             let new: Layer = par_map(nshards, threads, |ti| {
                 let list = &buckets[ti];
-                let mut nt = Table::new(nm, list.len() + list.len() / 2 + 16);
+                let mut cur = Table::new(nm, list.len() + list.len() / 2 + 16);
                 for &(si, i) in list {
-                    step_one(&src[si as usize], i as usize, &mut nt, j, s, p, m);
+                    step_one(&src[si as usize], i as usize, &mut cur, j, s, p, m);
                 }
-                nt.finish();
-                nt
+                cur.finish();
+                for jj in (j + 1)..jend {
+                    let mut nt = Table::new(nm, cur.len() + cur.len() / 2 + 16);
+                    for i in 0..cur.len() {
+                        step_one(&cur, i, &mut nt, jj, s, p, m);
+                    }
+                    nt.finish();
+                    cur = nt;
+                }
+                cur
             });
             peak_states = peak_states.max(layer_len(&layer) + layer_len(&new));
             peak_bytes = peak_bytes.max(layer_bytes(&layer) + layer_bytes(&new));
             drop(buckets);
             layer = new;
+            j = jend;
         }
         // row end: harvest singletons, normalize and canonicalize into row s+1
         let t = s + 1;
@@ -809,7 +843,7 @@ fn step_one(tab: &Table, i: usize, nt: &mut Table, j: usize, s: usize, p: &Param
         let neg = neg && !p.nosign;
         let nkey = base | bits;
         let (idx, nlo, nhi) = if unique {
-            match bound(nkey, j + 1, s, p) {
+            match bound_with(nkey, j + 1, s, p, Some(lo + e)) {
                 Some((nlo, nhi)) => (nt.push_unique(nkey, nlo, nhi), nlo, nhi),
                 None => continue,
             }
@@ -882,6 +916,7 @@ fn main() {
     let mut loose = false;
     let mut mirror = true;
     let mut threads = 4usize;
+    let mut block = 8usize;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -906,6 +941,10 @@ fn main() {
             "--no-x" => moments = 1,
             "--loose" => loose = true,
             "--no-mirror" => mirror = false,
+            "--block" => {
+                block = args[i + 1].parse().unwrap();
+                i += 1;
+            }
             "-o" => {
                 out = Some(args[i + 1].clone());
                 i += 1;
@@ -924,7 +963,8 @@ fn main() {
     let shards = if threads <= 1 { 64 } else { threads * 8 };
     let slack = std::env::var("DP_SLACK").is_ok();
     let nosign = std::env::var("DP_NOSIGN").is_ok();
-    let p = Params { n, model, tmax, moments, verbose, loose, mirror, threads, shards, slack, nosign };
+    let cheap_lo = std::env::var("DP_CHEAP_LO").is_ok();
+    let p = Params { n, model, tmax, moments, verbose, loose, mirror, threads, shards, slack, nosign, cheap_lo, block };
     let primes = modp::primes(first_prime + nprimes);
     for &pr in &primes[first_prime..] {
         let m = Mod::new(pr);

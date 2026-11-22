@@ -86,21 +86,6 @@ impl Table {
             self.slots[h] = i as u32 + 1;
         }
     }
-    #[inline]
-    pub fn find(&self, key: u128) -> Option<usize> {
-        let mut h = hash(key) as usize & self.mask;
-        loop {
-            let s = self.slots[h];
-            if s == 0 {
-                return None;
-            }
-            let i = s as usize - 1;
-            if self.keys[i] == key {
-                return Some(i);
-            }
-            h = (h + 1) & self.mask;
-        }
-    }
     fn push(&mut self, key: u128, lo: u32, hi: u32) -> usize {
         let idx = self.keys.len();
         self.is_hashed.push(false);
@@ -124,21 +109,6 @@ impl Table {
     #[inline]
     pub fn push_unique(&mut self, key: u128, lo: u32, hi: u32) -> usize {
         self.push(key, lo, hi)
-    }
-    /// Insert a hashed key with window [lo, hi] (hi < lo marks a dead state).
-    fn insert(&mut self, key: u128, lo: u32, hi: u32) -> usize {
-        if (self.hashed + 1) * 2 > self.slots.len() {
-            self.grow();
-        }
-        let idx = self.push(key, lo, hi);
-        self.is_hashed[idx] = true;
-        self.hashed += 1;
-        let mut h = hash(key) as usize & self.mask;
-        while self.slots[h] != 0 {
-            h = (h + 1) & self.mask;
-        }
-        self.slots[h] = idx as u32 + 1;
-        idx
     }
     /// Index and window of an existing hashed key, or compute its bound and
     /// insert it. Returns None if the state is dead. Probes the table once.

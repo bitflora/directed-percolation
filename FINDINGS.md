@@ -66,6 +66,9 @@ Each change below was verified to give identical series: the order-15 fixture, a
 | Trim each window to its nonzero range at the end of every step | Peak states −21% (bond), −31% (site) combined with the previous row; memory −8% / −19% |
 | `--features u32` (31-bit primes) | Memory −42% per run; twice as many primes |
 | Binary-search cover | No measurable change under contention |
+| 128-bit mask cover (each window a few bit operations; checked against the point-list version on 400,000 random states) | Bound time −25%, total about −10% |
+| Single-source targets inherit the source's trimmed lower end plus the degree shift, skipping the past-cover loop | Bound time 5.2 s → 3.3–4.0 s, total about −20%, memory −5% |
+| Rejected: lower end 2s + fixed for hashed targets, relying on trimming | Peak memory +62%, no time gain |
 
 **Bound tightness.** A diagnostic mode counts graphs without signs, so nothing cancels.
 - Even then, the interval-cover lower bound on degree placed is 1–3 below the true structural minimum for 74% of states at n = 90. The looseness is structural, not cancellation.
@@ -143,3 +146,27 @@ The plan's criterion was a 3× gain at 230 terms or 2× at 200. It is met comfor
 **Caveats:**
 - The extrapolations assume the drift keeps decaying geometrically.
 - Our projected remaining error at 171 terms (about 2 × 10⁻⁷ for ν∥) is much smaller than Jensen's quoted ±6 × 10⁻⁶. Either his error bars were conservative or the drift proxy is optimistic; a longer series is what will tell.
+
+## F7. Measured cost and projections for the compute decision (M4)
+
+**Measured** (single thread, one prime per process, all 12 logical cores also busy with another job):
+
+| Run | Binary | Peak memory | Time per prime |
+| --- | --- | --- | --- |
+| bond, n = 126 | u64, v4 | 210 MiB | 2.8 min |
+| bond, n = 146 | u64, v4 | 1.19 GB | 31 min |
+| bond, n = 156 | u32, v8 | 1.33 GB | about 80 min (2–4 processes of ours running at once) |
+
+**Growth:** states and memory grow by 1.09 per term, time by about 1.10 per term. Since these runs, engine v10 is about 20% faster and 5% leaner, and `--no-x` (dropping μ₂₀) roughly halves memory.
+
+**Projections** (rough; they scale the measured numbers by 1.09–1.10 per term). The bond series needs about 0.96 bits per term, so 7 primes of 31 bits or 4 of 62 bits including a verification prime.
+
+| Target order | Memory per prime (u32, all moments) | Single-thread time per prime, contended | Feasible where |
+| --- | --- | --- | --- |
+| 171 (reproduce 1999) | about 4.6 GB (about 2.5 GB with `--no-x`) | about 4.5 h | This PC. About 30 h total with all moments in one process, or about 16 h with `--no-x` in two. Likely 2–3× faster if the other job is not running. |
+| 200 | about 57 GB | about 70 h (much less multithreaded and uncontended) | A 128 GB node with the sharded multithreaded mode (`--threads`), roughly 3 h per prime at 16 threads (estimate) |
+| 230 | about 0.8 TB | far beyond single-thread | A 1 TB node, roughly 15–20 h per prime at 32 threads (estimate), so several days for 7 primes |
+
+**Untested at scale:**
+- The sharded multithreaded mode has been verified only for correctness (order 15 and 40). Its parallel efficiency without contention has not been measured, because this machine was fully loaded all night.
+- Measuring it on an idle machine is the first step before renting anything.
