@@ -714,9 +714,6 @@ fn row_end_one(tab: &Table, i: usize, nt: &mut Table, sc: &mut Scratch, t: usize
     if !is_single && t >= p.tmax {
         return;
     }
-    if tab.is_zero(i) {
-        return;
-    }
     let w = 127 - shape.leading_zeros() as i64;
     let v = &mut sc.v;
     let a = &mut sc.a;
@@ -788,9 +785,7 @@ fn step_one(tab: &Table, i: usize, nt: &mut Table, j: usize, s: usize, p: &Param
     let nm = p.moments;
     let bj: u128 = 1 << j;
     let bj1: u128 = 1 << (j + 1);
-    if tab.is_zero(i) {
-        return; // exact cancellation (or zero mod p): contributes nothing
-    }
+    // (all-zero states were removed by Table::finish, so no zero check here)
     let key = tab.key(i);
     let (lo, hi) = tab.window(i);
     let q = key & bj != 0;
@@ -799,10 +794,7 @@ fn step_one(tab: &Table, i: usize, nt: &mut Table, j: usize, s: usize, p: &Param
     if !q && !a {
         // vertex absent and nothing pending: identity, same bound, unique target
         PROF[2].fetch_add(1, Ordering::Relaxed);
-        let idx = nt.push_unique(key, lo, hi);
-        for mm in 0..nm {
-            nt.coef_mut(idx, mm).copy_from_slice(tab.coef(i, mm));
-        }
+        nt.push_copy(key, lo, hi, tab.block(i));
         return;
     }
     // (target bits, degree shift, negate, unique)

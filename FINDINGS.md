@@ -90,6 +90,21 @@ Each change below was verified to give identical series: the order-15 fixture, a
 | Rejected: lower end 2s + fixed for hashed targets, relying on trimming | Peak memory +62%, no time gain |
 | Per-state bookkeeping: 8-bit window ends, 32-bit per-shard offsets | Memory −4% (u32), −9% (u32 `--no-x`) at n = 110 |
 | `--features u16` (15-bit primes, Jensen's choice) | At n = 110 with `--no-x`: 9.3 MiB, against 12.2 MiB for u32 and 18.1 MiB for u64; four times the primes of u64 |
+| Drop the redundant zero check; copy identity blocks without zero-filling | About −3% (n = 120, idle machine: 30.6 s → 29.7 s) |
+| Rejected: `-C target-cpu=native` (AVX2) | About −2–3%; not worth the loss of portable binaries |
+
+**Profile on the idle machine** (bond, n = 120, one prime, single thread, 30.0 s in total):
+
+| Part | Time | Share |
+| --- | --- | --- |
+| Bound computation (32M calls, 0.26 µs each) | 8.4 s | 28% |
+| Rest of the column steps: hashing, accumulation, copies (54M state-steps, 28M of them identity copies) | 17.3 s | 58% |
+| Window trimming and compaction (`finish`) | 2.9 s | 10% |
+| Row ends | about 1.3 s | 4% |
+
+The next speed-ups worth trying:
+- **Park untouched states.** About half of all state-steps are pure copies of states the current column does not touch. Leaving those states in place until the kink reaches them would avoid the copies.
+- **Fewer cache misses** in the target hash.
 
 **Bound tightness.** A diagnostic mode counts graphs without signs, so nothing cancels.
 - Even then, the interval-cover lower bound on degree placed is 1–3 below the true structural minimum for 74% of states at n = 90. The looseness is structural, not cancellation.

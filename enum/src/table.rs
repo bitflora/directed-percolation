@@ -111,6 +111,30 @@ impl Table {
     pub fn push_unique(&mut self, key: u128, lo: u32, hi: u32) -> usize {
         self.push(key, lo, hi)
     }
+    /// Append a unique key whose coefficient block (all moments) is copied
+    /// verbatim, without zero-filling the arena first.
+    #[inline]
+    pub fn push_copy(&mut self, key: u128, lo: u32, hi: u32, block: &[C]) {
+        self.is_hashed.push(false);
+        self.keys.push(key);
+        self.lo.push(lo as u8);
+        self.hi.push(hi as u8);
+        assert!(self.arena.len() < u32::MAX as usize, "shard arena exceeds 2^32 coefficients: use more shards");
+        self.off.push(self.arena.len() as u32);
+        let need = self.arena.len() + block.len();
+        if need > self.arena.capacity() {
+            let extra = (self.arena.capacity() / 4).max(block.len()).max(1024);
+            self.arena.reserve_exact(extra);
+        }
+        self.arena.extend_from_slice(block);
+    }
+    /// The whole coefficient block of state i (all moments, contiguous).
+    #[inline(always)]
+    pub fn block(&self, i: usize) -> &[C] {
+        let len = (self.hi[i] - self.lo[i] + 1) as usize * self.nm;
+        let o = self.off[i] as usize;
+        &self.arena[o..o + len]
+    }
     /// Index and window of an existing hashed key, or compute its bound and
     /// insert it. Returns None if the state is dead. Probes the table once.
     #[inline]
@@ -201,13 +225,6 @@ impl Table {
         self.lo.shrink_to_fit();
         self.hi.shrink_to_fit();
         self.off.shrink_to_fit();
-    }
-    /// True if every stored coefficient of every moment is zero.
-    #[inline]
-    pub fn is_zero(&self, i: usize) -> bool {
-        let len = (self.hi[i] - self.lo[i] + 1) as usize * self.nm;
-        let o = self.off[i] as usize;
-        self.arena[o..o + len].iter().all(|&x| x == 0)
     }
     #[inline(always)]
     pub fn coef(&self, i: usize, mm: usize) -> &[C] {
