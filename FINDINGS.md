@@ -147,6 +147,20 @@ The plan's criterion was a 3× gain at 230 terms or 2× at 200. It is met comfor
 - The extrapolations assume the drift keeps decaying geometrically.
 - Our projected remaining error at 171 terms (about 2 × 10⁻⁷ for ν∥) is much smaller than Jensen's quoted ±6 × 10⁻⁶. Either his error bars were conservative or the drift proxy is optimistic; a longer series is what will tell.
 
+**Biased approximants.** Q_K is forced to vanish at x_c (K = 2, L = 0, 2, …, 10, M = 136 … 146; [analysis/biased_scan.py](analysis/biased_scan.py), output [results/analysis/bond146_biased.json](results/analysis/bond146_biased.json)). At Jensen's p_c = 0.644700185 the 146-term series gives:
+
+| Quantity | Biased estimate, 146 terms | Jensen 1999 | Difference |
+| --- | --- | --- | --- |
+| γ | 2.2777279 ± 0.6e-6 | 2.277730(5) | −2.1e-6 |
+| ν∥ | 1.7338458 ± 0.1e-6 | 1.733847(6) | −1.2e-6 |
+| 2ν⊥ | 2.1937038 ± 1.1e-6 | 2.193708(4) | −4.2e-6 |
+| γ + 2ν⊥ | 4.4714237 ± 3.7e-6 | 4.471425(15) | −1.3e-6 |
+
+The ± values are the spread over approximants. All four agree with Jensen within his error bars.
+
+Sensitivity to the assumed critical point is dγ/dp_c ≈ 1.5 × 10³ and dν∥/dp_c ≈ 1.0 × 10³. So Jensen's ±5 × 10⁻⁹ on p_c alone allows ±5–8 × 10⁻⁶ in these exponents. The biased S and μ₀₂/μ₀₁ estimates equal Jensen's γ and ν∥ at x_c = 0.64470018615 and 0.64470018620, inside his p_c interval.
+
+
 ## F7. Measured cost and projections for the compute decision (M4)
 
 **Measured** (single thread, one prime per process, all 12 logical cores also busy with another job):
@@ -170,3 +184,27 @@ The plan's criterion was a 3× gain at 230 terms or 2× at 200. It is met comfor
 **Untested at scale:**
 - The sharded multithreaded mode has been verified only for correctness (order 15 and 40). Its parallel efficiency without contention has not been measured, because this machine was fully loaded all night.
 - Measuring it on an idle machine is the first step before renting anything.
+
+## F8. Site series to order 136, and the site critical point from universality
+
+[results/series/site136.json](results/series/site136.json) holds the exact site series to order 136 (Jensen 1999 reached 158). It was reconstructed from four 62-bit primes and verified with the fourth; the largest coefficient has 152 bits, and the series matches the M0 ground truth to order 15.
+
+**Unbiased analysis** ([results/analysis/site136_gate_report.md](results/analysis/site136_gate_report.md)). The site series converges more slowly and less regularly than the bond series, as Jensen also found. At T = 136:
+
+| Quantity | This work, T = 136 | Jensen site, T = 158 | Bond value |
+| --- | --- | --- | --- |
+| x_c | 0.7054851–0.7054853 | 0.70548515(20) | |
+| γ | 2.27760 | 2.27765(6) | 2.277730 |
+| ν∥ (R1) | 1.73378 | 1.73381(4) | 1.733847 |
+| 2ν⊥ (R2) | 2.19378 | 2.19377(5) | 2.193708 |
+
+**Biased analysis.** Following Jensen 1999 §4.2, biased approximants were scanned over x_c and the points found where each biased site exponent equals the bond value. Output: [results/analysis/site136_biased.json](results/analysis/site136_biased.json).
+
+| Series | Bond exponent imposed | Site x_c where it is matched |
+| --- | --- | --- |
+| S | γ = 2.277730 | 0.70548526 |
+| μ₀₂/μ₀₁ | ν∥ = 1.733847 | 0.70548523 |
+| μ₂₀μ₀₂/μ₀₁² | 2ν⊥ = 2.193708 | 0.70548516 |
+| μ₂₀ | γ + 2ν⊥ = 4.471425 | 0.70548525 |
+
+The mean of the four is 0.70548522 with a spread of about ±4 × 10⁻⁸, matching Jensen's biased estimate p_c(site) = 0.70548522(4) from 158 terms. The two lattices are consistent with a common set of exponents (universality) at this precision.

@@ -104,6 +104,17 @@ Present a table of order reached, estimated wall time and cost for:
 
 No paid or external resources are used without explicit approval.
 
+**State after the first night (November 22, 2026).** The table is in FINDINGS F7. In short:
+- The gate passed: ν∥ and ν⊥ improve about 1.8× per 10 extra terms.
+- Order 171 is feasible on this PC in about 16–30 h of compute.
+- Order 200 needs a node with about 128 GB.
+- Order 230 needs about 1 TB.
+
+Recommended next steps, cheapest first:
+1. On an idle machine, measure the parallel efficiency of `--threads N --block K` at n = 120–140. This decides the cloud estimates.
+2. Reproduce order 171 locally with `--features u32 --no-x` in two processes (about 2.5 GB each), then run μ₂₀ separately. This gives a like-for-like comparison with Jensen's estimates at his own length. An exact coefficient check needs his series files.
+3. Only then decide on a 128 GB to 1 TB node for 200–230 terms.
+
 ## M5: Production runs and analysis
 
 - **Bond series** to the agreed order, then **site**.
