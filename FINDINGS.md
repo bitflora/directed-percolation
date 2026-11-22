@@ -218,9 +218,17 @@ This is a weak exclusion. Known D-finite lattice series often need ODEs far larg
 | 200 | about 57 GB | about 70 h (much less multithreaded and uncontended) | A 128 GB node with the sharded multithreaded mode (`--threads`), roughly 3 h per prime at 16 threads (estimate) |
 | 230 | about 0.8 TB | far beyond single-thread | A 1 TB node, roughly 15–20 h per prime at 32 threads (estimate), so several days for 7 primes |
 
-**Untested at scale:**
-- The sharded multithreaded mode has been verified only for correctness (order 15 and 40). Its parallel efficiency without contention has not been measured, because this machine was fully loaded all night.
-- Measuring it on an idle machine is the first step before renting anything.
+**Parallel scaling** (measured at 03:29, after the other job had stopped). Bond, n = 120, one prime, u64, block-parallel mode (`--threads T --block 8`). The 6-core / 12-thread laptop was still running four other single-threaded processes of ours.
+
+| Threads | Time | Speed-up | Peak memory |
+| --- | --- | --- | --- |
+| 1 (streaming) | 51.4 s | 1.0× | 104 MiB |
+| 2 | 31.2 s | 1.65× | 146 MiB |
+| 4 | 17.4 s | 2.95× | 146 MiB |
+| 6 | 14.1 s | 3.65× | 146 MiB |
+| 6, `--block 16` | 29.5 s | 1.7× | 145 MiB |
+
+Parallel efficiency is about 75% at 4 threads and 60% at 6 here, limited by the busy physical cores. The parallel mode lacks streaming, so it needs about 40% more memory. The block size matters. At 6 threads, blocks of 2, 4, 6, 8 and 12 took 15.8, 13.9, 14.0, 14.2 and 17.2 s, so 4–8 is best (default 8). In the first measurement, a block of 16 took twice as long as 8. Scaling on a many-core server is still unmeasured; it is the first thing to check before renting one.
 
 ## F8. Site series to order 136, and the site critical point from universality
 
