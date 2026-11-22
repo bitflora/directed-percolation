@@ -97,7 +97,7 @@ Each change below was verified to give identical series: the order-15 fixture, a
 
 **Profile.** With bounds computed twice instead of once, run time rises from 12.2 s to 15.4 s. So hashed-target bounds take about a quarter of the time, and all bounds roughly a third. Hashing, memory traffic and accumulation take the rest.
 
-## F4. Verified bond series to order 146
+## F4. Verified bond series to orders 146 and 156
 
 [results/series/bond146.json](results/series/bond146.json) holds the exact S, μ₀₁, μ₀₂ and μ₂₀ series for bond DP on the directed square lattice to order 146 (Jensen 1999 reached 171).
 
@@ -114,21 +114,6 @@ The coefficients cannot be compared term by term with Jensen's, because his seri
 - Reconstructed from seven 31-bit primes and verified (the largest coefficient has 149 bits).
 - The 146-term series is an exact prefix.
 - No ODE with (k + 1)(d + 1) ≤ 147 exists for any of the four series ([results/analysis/dfinite_bond156.txt](results/analysis/dfinite_bond156.txt)).
-
-## F6. No small linear ODE (D-finiteness search)
-
-[analysis/dfinite.py](analysis/dfinite.py) solves the linear system for an ODE Σ_{i≤k} P_i(x) θⁱ f = 0 with deg P_i ≤ d modulo two 62-bit primes. It uses 10 more equations than unknowns, and was checked on a known D-finite series (central binomial coefficients, found at order 1, degree 1).
-
-For all four 146-term bond series there is no such ODE whenever (k + 1)(d + 1) ≤ 137, for k = 1 … 10. Examples of excluded sizes:
-
-| Order k | Largest degree d excluded |
-| --- | --- |
-| 1 | 67 |
-| 3 | 33 |
-| 6 | 18 |
-| 10 | 11 |
-
-This is a weak exclusion. Known D-finite lattice series often need ODEs far larger than this (the Ising χ̃⁽⁵⁾ ODE has order 33). It is reported as a baseline for the haruspicy approach (RESEARCH_PLAN M6), not as evidence of non-D-finiteness. Output: [results/analysis/dfinite_bond146.txt](results/analysis/dfinite_bond146.txt).
 
 ## F5. Reproduction of the 1999 estimates and the precision-gain gate (M2)
 
@@ -196,6 +181,21 @@ The ± values are the spread over approximants. All four agree with Jensen withi
 
 Sensitivity to the assumed critical point is dγ/dp_c ≈ 1.5 × 10³ and dν∥/dp_c ≈ 1.0 × 10³. So Jensen's ±5 × 10⁻⁹ on p_c alone allows ±5–8 × 10⁻⁶ in these exponents. The biased S and μ₀₂/μ₀₁ estimates equal Jensen's γ and ν∥ at x_c = 0.64470018615 and 0.64470018620, inside his p_c interval.
 
+
+## F6. No small linear ODE (D-finiteness search)
+
+[analysis/dfinite.py](analysis/dfinite.py) solves the linear system for an ODE Σ_{i≤k} P_i(x) θⁱ f = 0 with deg P_i ≤ d modulo two 62-bit primes. It uses 10 more equations than unknowns, and was checked on a known D-finite series (central binomial coefficients, found at order 1, degree 1).
+
+For all four 146-term bond series there is no such ODE whenever (k + 1)(d + 1) ≤ 137, for k = 1 … 10. Examples of excluded sizes:
+
+| Order k | Largest degree d excluded |
+| --- | --- |
+| 1 | 67 |
+| 3 | 33 |
+| 6 | 18 |
+| 10 | 11 |
+
+This is a weak exclusion. Known D-finite lattice series often need ODEs far larger than this (the Ising χ̃⁽⁵⁾ ODE has order 33). It is reported as a baseline for the haruspicy approach (RESEARCH_PLAN M6), not as evidence of non-D-finiteness. Output: [results/analysis/dfinite_bond146.txt](results/analysis/dfinite_bond146.txt).
 
 ## F7. Measured cost and projections for the compute decision (M4)
 
