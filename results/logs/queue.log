@@ -22,3 +22,5 @@
 [2026-11-22 03:25:26] start site146 S1 (0-2), S2 (3-4), S3 (5-6)
 [2026-11-22 04:06:38] start bond171 (--no-x, u32, 7 primes, 6 threads)
 [2026-11-22 05:26:56] bond171 done
+[2026-11-22 22:47:24] start bond171_x (all moments, u16, primes 0..11, 6 threads)
+[2026-11-23 03:15:59] bond171_x done (exit 0)

@@ -9,7 +9,7 @@ Literature search completed November 21, 2026. Implementation started the same n
 
 Results so far are in [FINDINGS.md](FINDINGS.md), and the milestone status is at the top of [RESEARCH_PLAN.md](RESEARCH_PLAN.md).
 
-Headline: an independent implementation reproduced Jensen's 1999 bond results at his own length. At 171 terms, p_c, γ and ν∥ all agree within his error bars. The precision-gain gate passed, so extending to 200–230 terms is worth doing.
+Headline: an independent implementation reproduced Jensen's 1999 bond results at his own length. All four moment series are verified to 171 terms, and p_c, γ, ν∥, 2ν⊥ and the moment exponents all agree within his error bars. The precision-gain gate passed, so extending to 200–230 terms is worth doing.
 
 Main findings from the literature search (computed results are in [FINDINGS.md](FINDINGS.md), summarized at its top):
 
@@ -17,7 +17,7 @@ Main findings from the literature search (computed results are in [FINDINGS.md](
 - The published rational conjecture for the bulk exponents is already excluded by 10 to 90 error bars, so the "hidden exact solution" angle is a long shot.
 - A sharper near-exact question remains at a wall: τ₁ = 1.00014(2) against the conjecture τ₁ = 1.
 - The 1+1 experiments are Couette and pipe flow. The liquid-crystal experiments are 2+1. All measure exponents to about two digits.
-- With the 1999 algorithm, this 16 GB machine would reach only about order 179. The new engine needs roughly 6× less memory for the same series, which puts order 171 within reach locally (about 3 GB per prime with `--features u32 --no-x`). The binding constraint is now time: an estimated 1.5 h per prime at order 171 with the current engine while another job occupies every core (scaled from 22 min per prime measured at order 156). A worthwhile extension beyond 171 still needs rented memory or a better algorithm.
+- With the 1999 algorithm, this 16 GB machine would reach only about order 179. The new engine needs roughly 6× less memory for the same series, which put order 171 within reach locally: about 12 min per prime for S, μ₀₁, μ₀₂ (u32, `--no-x`, 2.2 GB) and about 23 min per prime for all moments (u16, 2.1 GB working set, while another job used every core). A worthwhile extension beyond 171 still needs rented memory or a better algorithm.
 
 Read these files in order:
 

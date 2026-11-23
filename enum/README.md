@@ -21,10 +21,11 @@ Options:
 | `--threads T` | T = 1 uses streaming steps that free each source shard once it is processed. T > 1 (default 4) runs sharded parallel blocks. Under heavy CPU contention T = 1 is faster. |
 | `--park` | Single-thread mode only. Each state waits in the table of the next column that changes it, so untouched states are never copied. Half the column steps and about 11% faster, but about 46% more peak memory (n = 120). Use it when time, not memory, binds. |
 | `--block K` | Parallel mode only: steps per synchronization (default 8). A block of K column steps touches only K + 1 key bits, so states are sharded by the other bits and each thread runs the block independently. |
+| (parallel memory) | Since v14, each parallel block first moves the old layer into per-target pieces, freeing every source shard once split and every piece once stepped. The old and new layers are therefore never both held in full: at n = 150, all moments, u16, 6 threads, the peak working set fell from 694 to 491 MiB, with identical output. Freed heap memory is returned to Windows after every block (`DP_NO_TRIM=1` disables this). |
 | `--no-x` | Store only M₀; outputs S, μ₀₁ and μ₀₂, using a third of the memory |
 | `--no-mirror` | Disable the mirror reduction (testing) |
 | `--loose` | Disable order pruning (testing only) |
-| `-v` | Per-row progress: state count, peak memory, time |
+| `-v` | Per-row progress: state count, estimated table peak, measured heap peak (counting allocator), time |
 
 Each prime's line is appended to the output file as soon as it finishes, so independent primes can run in separate processes and be combined afterwards.
 
@@ -44,6 +45,9 @@ Diagnostic environment variables:
 - `DP_SLACK=1`: window slack against the bound.
 - `DP_NOSIGN=1`: count graphs without signs.
 - `DP_CHEAP_LO=1`: the rejected cheap lower bound.
+- `DP_NO_TRIM=1`: do not return freed heap memory to the OS after each block.
+
+`analysis/peakmem.ps1 <exe> <args>` runs the engine and reports its peak working set, sampled every 100 ms. The heap peak printed by `-v` excludes heap fragmentation; the working set includes it.
 
 With `-v`, a coarse profile is also printed: step-loop time, finish time, identity copies, and time in the bound.
 

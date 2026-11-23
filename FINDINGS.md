@@ -7,7 +7,7 @@ Running record of results for the directed percolation study. Each claim lists i
 - **Engine.** An independent reimplementation of Jensen's 1999 algorithm, checked against exact ground truth (F1, F2). It adds translation and mirror reductions, exact window trimming and faster bounds (F3). Per prime it needs roughly 6× less memory than the 1999 implementation.
 - **Verified exact series:**
   - bond to order 156 for all four moment series (S, μ₀₁, μ₀₂, μ₂₀) (F4);
-  - bond to order 171 for S, μ₀₁ and μ₀₂, Jensen's own length (F10, F11);
+  - bond to order 171 for all four moment series, Jensen's own length (F10, F11, F12; μ₂₀ added on the second night);
   - site to order 146 (F8).
 
   Jensen reached 171 (bond) and 158 (site).
@@ -18,6 +18,7 @@ Running record of results for the directed percolation study. Each claim lists i
   - The site critical point from universality is 0.70548522, as he found (F5, F8).
 - **Gate (M2) passed.** Estimates of ν∥ and ν⊥ improve about 1.6–2× per 10 extra terms (fits over 90–171 terms), so 200–230 terms should give about one more significant digit (F5, F10, F11).
 - **Solvability.** There is no small linear ODE for any of the series (F6). On rings, the poles of the mean cluster size pinch toward p_c and cluster around the bulk non-physical singularities: a first look at the haruspicy route (F9).
+- **Second night (November 22–23).** μ₂₀ at 171 terms completes Jensen's set; every unbiased estimate, including 2ν⊥ = 2.1937077 and γ + 2ν⊥ = 4.4714139, agrees with his. The μ₂₀μ₀₂/μ₀₁² critical point (0.6447001905) sits 5 × 10⁻⁹ above the S and μ₀₂/μ₀₁ ones, inside his error bar; this gap is the clearest target for longer series. A split-layer parallel step cut peak memory by about 30% (F12).
 - **Compute decision (M4).** Measured: order 171 for S, μ₀₁ and μ₀₂ takes 12 min per prime with 6 threads and 2.2 GB on this laptop (F11), and parallel efficiency is about 60–75% (F7). Orders 200 and above need a large-memory machine; projections are in F7.
 
 ## F1. Independent ground truth for small orders (M0)
@@ -367,3 +368,48 @@ These numbers come from an independently written program, and they are consisten
 - Every estimate agrees with Jensen's within his quoted error, from series computed by an independently written program and analysed with an independently written approximant code. This is the strongest available evidence, short of comparing his coefficient files, that the two series are the same and that his 1999 numbers are sound.
 - The biased estimates are identical to the 146-, 156- and 166-term values within about 3 × 10⁻⁷, so at fixed p_c the limiting uncertainty is p_c itself.
 - dν∥/dp_c ≈ 1.0 × 10³, so pinning p_c to ±1 × 10⁻¹⁰ would fix ν∥ to about ±1 × 10⁻⁷. That is the case for the longer series in M5.
+
+## F12. All four bond moment series at 171 terms: μ₂₀ completes Jensen's 1999 set
+
+[results/series/bond171.json](results/series/bond171.json) now holds μ₂₀ to order 171, alongside the verified S, μ₀₁ and μ₀₂ (F11). This completes the set of series Jensen 1999 analysed.
+
+**Verification.**
+- μ₂₀ was reconstructed from twelve 15-bit primes ([analysis/combine_bond171_mu20.py](analysis/combine_bond171_mu20.py)).
+- Its largest coefficient has 157 bits; eleven primes give 165 bits, and the twelfth prime changes nothing (leave-last-out check).
+- The order-156 μ₂₀ series is an exact prefix.
+- Every one of the twelve runs also recomputed S, μ₀₁ and μ₀₂ and reproduced the 171-term series of F11 modulo its prime. That makes twelve independent checks of the earlier result, by a different build (u16 against u32) with different moment storage (all three moments against `--no-x`).
+
+**Engine change (v14).** Parallel blocks now split the old layer into per-target pieces and free each piece once it has been stepped. Previously the whole old layer and the whole new layer were held at the same time. Freed heap memory is returned to Windows after each block. Output is identical.
+
+Peak working set, order 150, all moments, u16, 6 threads, measured with [analysis/peakmem.ps1](analysis/peakmem.ps1):
+
+| Engine | Peak working set | Time |
+| --- | --- | --- |
+| v13 | 694 MiB | 272 s |
+| v14 | 486–491 MiB | 235–256 s |
+
+**Cost at order 171** (all moments, u16, `--threads 6 --block 6`, with another job using all 12 logical cores):
+- 22–24 min per prime, 4.5 h for twelve;
+- heap peak 1.80 GB and peak working set 2.1 GB, against about 4.4 GB projected in F7 for the 31-bit build with the old engine.
+
+**Estimates** ([results/analysis/bond171_gate_report.md](results/analysis/bond171_gate_report.md), [results/analysis/bond171_biased_x.json](results/analysis/bond171_biased_x.json)):
+
+| Quantity | 156 terms | 171 terms | Jensen 1999 |
+| --- | --- | --- | --- |
+| 2ν⊥ (μ₂₀μ₀₂/μ₀₁², unbiased) | 2.1937080 | 2.1937077 (spread 3e-7) | 2.193708(4) |
+| p_c from μ₂₀μ₀₂/μ₀₁² (unbiased) | 0.6447001908 | 0.6447001905 | 0.644700185(5) |
+| γ + 2ν⊥ (μ₂₀, unbiased) | 4.4714110 | 4.4714139 | 4.471425(15) |
+| γ + 2ν⊥ (biased at 0.644700185) | 4.4714237 | 4.4714267 | |
+| 2ν⊥ (biased at 0.644700185) | 2.1937016 | 2.1936998 | |
+
+**Drift.** The unbiased 2ν⊥ estimate drifts by only about 2 × 10⁻⁸ per term from 156 to 171 terms. With the 161–171-term points included, the drift fit gives an error factor of 1.9× per 10 terms. The fit projects a 40× gain from 171 to 230 terms, unchanged from F5. γ + 2ν⊥ from μ₂₀ is still creeping up by about 1 × 10⁻⁷ per term, as Jensen also found.
+
+**One tension, inside Jensen's error bars.** The μ₂₀μ₀₂/μ₀₁² ratio puts the critical point at 0.6447001905, about 5 × 10⁻⁹ above the p_c from S and μ₀₂/μ₀₁ (0.6447001847–0.6447001855). That is at the upper edge of Jensen's 0.644700185(5).
+- The 2ν⊥ estimate is steep in the assumed p_c: about 1.9 × 10⁻⁵ per 10⁻⁸.
+- Biased at Jensen's central p_c, 2ν⊥ = 2.1936998, 2.0 of his error bars low.
+- Unbiased, 2ν⊥ = 2.1937077, in agreement with his value.
+- So the 2ν⊥ value depends on which critical point it is paired with. Jensen's quoted 2ν⊥ evidently used the series' own critical point.
+- Consistency check: biased at 0.644700185, (γ + 2ν⊥) − γ = 4.4714267 − 2.2777276 = 2.1936991, which matches the biased R2 value. So the two routes agree once the same p_c is used.
+- The 5 × 10⁻⁹ gap between the two series' critical points is the most useful target for longer series: shrinking it pins p_c and both ν's together.
+
+**Conclusion.** All four 1999 series are reproduced at full length, and every unbiased estimate agrees with Jensen's within his quoted errors. That finishes the reproduction goal for the bond lattice (plan goal 1). The site series remains at 146 against his 158.
