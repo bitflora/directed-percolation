@@ -250,6 +250,15 @@ impl Table {
         self.hi.shrink_to_fit();
         self.off.shrink_to_fit();
     }
+    /// Rewrite every key. Only for tables without a hash index (after
+    /// `finish`, or built by `push_copy`).
+    #[allow(dead_code)]
+    pub fn map_keys<F: Fn(u128) -> u128>(&mut self, f: F) {
+        assert!(self.slots.is_empty());
+        for k in self.keys.iter_mut() {
+            *k = f(*k);
+        }
+    }
     #[inline(always)]
     pub fn coef(&self, i: usize, mm: usize) -> &[C] {
         let len = (self.hi[i] - self.lo[i] + 1) as usize;

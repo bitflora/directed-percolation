@@ -11,7 +11,11 @@ import argparse
 import json
 from collections import defaultdict
 
-NAMES = ("S", "mu01", "mu02", "mu20")
+NAMES = ("S", "mu01", "mu02", "mu20")  # bulk engine; other engines name their own series
+
+
+def series_names(rec):
+    return [k for k, v in rec.items() if isinstance(v, list)]
 
 
 def crt_signed(residues, primes):
@@ -32,9 +36,7 @@ def combine(records):
     if len(set(primes)) != len(primes):
         raise SystemExit("duplicate primes in input")
     out = {}
-    for name in NAMES:
-        if name not in records[0]:
-            continue
+    for name in series_names(records[0]):
         n1 = len(records[0][name])
         full, fewer = [], []
         for k in range(n1):
@@ -71,8 +73,8 @@ def main():
         fx = json.load(open(a.check))
         N = fx["order"]
         for key, r in result.items():
-            ref = fx[r["model"]]
-            for name in NAMES:
+            ref = fx[r["model"]] if r["model"] in fx else fx  # wall fixtures are flat
+            for name in series_names(ref):
                 if name in r and name in ref:
                     m = min(N, r["order"]) + 1
                     assert r[name][:m] == ref[name][:m], (key, name, r[name][:m], ref[name][:m])

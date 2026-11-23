@@ -13,7 +13,7 @@ Status, morning of November 22, 2026:
 | M2 analysis and gate | Done. **Gate passed**: ν∥ and ν⊥ improve about 1.6–2× per 10 terms (FINDINGS F5) |
 | M3 engineering | Partly done (F2, F3): shape, mirror, zero-state and window-trimming reductions; mask bounds and exact lower ends for single-source targets; u32 and u16 builds, streaming and block-parallel steps. Not yet done: SIMD, out-of-core, Zbarsky sparsification, and measuring parallel efficiency on an idle machine |
 | M4 compute decision | Open; measured projections in FINDINGS |
-| M5 | Not started (wall series for τ₁) |
+| M5 | Wall series done: direct T to 110 terms with all wall moments; τ₁ = 1.00010(2), so τ₁ = 1 is disfavoured (FINDINGS F14). Bulk extension beyond 171 not started |
 | M6 | Started: D-finiteness search (no ODE with (k + 1)(d + 1) ≤ 147); exact ring rational functions up to L = 10 (F6, F9) |
 | M7 | FINDINGS.md kept current; no paper draft yet |
 

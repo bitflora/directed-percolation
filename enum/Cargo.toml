@@ -7,6 +7,14 @@ edition = "2021"
 u32 = []
 u16 = []
 
+[[bin]]
+name = "dpenum"
+path = "src/main.rs"
+
+[[bin]]
+name = "dpwall"
+path = "src/wall.rs"
+
 [dependencies]
 
 [profile.release]

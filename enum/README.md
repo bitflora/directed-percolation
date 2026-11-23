@@ -91,3 +91,24 @@ Further checks used during development:
 - mirror and no-mirror runs agree, and 1 and 4 threads agree;
 - u32 (31-bit) and u64 (62-bit) runs agree modulo 2^31 − 1;
 - the order-50 series is an exact prefix of the order-70 series.
+
+## dpwall: the wall series
+
+`src/wall.rs` builds a second binary, `dpwall`, for bond DP next to an impenetrable wall (sites with x < 0 removed, source at x = 0; Essam et al. 1996, Jensen 1999 II). It computes, modulo primes:
+
+- T = Σ_{t≥1} P(t), the mean cluster length, where P(t) is the probability that the cluster reaches row t (exponent τ₁);
+- S, Σ x C, Σ x² C, Σ t C and Σ t² C (exponents γ₁ + k ν⊥ and γ₁ + k ν∥).
+
+```
+cargo build --release --bin dpwall
+target/release/dpwall -n 110 --threads 6 --block 6 --primes 3 -v -o wall110.jsonl
+python ../analysis/crt.py wall110.jsonl -o wall110.json
+```
+
+**Method.** The path-union expansion, as in the bulk engine, but every state is kept: P(t) is the sum over row-t states B of (−1)^(|B|−1) times the weight of B (inclusion–exclusion over the wet sites of row t), so paths never have to merge again and the bulk engine's collapse pruning does not apply. The wall also removes translation invariance, so there is no nodal or translation reduction. Pruning is by order only: a state on the boundary between rows t and t + 1 with k occupied sites has weight O(p^(t+k−1)), and each pending occupied parent still needs a bond.
+
+**Sweep.** One parent at a time. Step j changes only two adjacent key bits (the pending child and parent j), so a step maps groups of at most four states to themselves. Blocks of steps run in parallel on shards keyed by the untouched bits, as in the bulk engine. Targets whose pending-child bit is clear have a single source and are appended without hashing (about 1.4× faster).
+
+**Cost** (u64 residues, 6 threads, one prime): order 67 in 4.5 s, 80 in 45 s, 90 in 135 s, 100 in about 10 min with 8 M states and 0.6 GB, 110 in 37 min with 28 M states and 2.2 GB. States grow by about 1.14 per order and time by about 1.16, so order 120 would need about 8 GB.
+
+**Tests.** `analysis/wall_ground_truth.py N --check` computes the same series by the exact Domany–Kinzel transfer matrix and by the path-union expansion in Python, and compares both with Table 1 of Essam et al. (1996). The engine reproduces the fixture `analysis/wall_order30.json` and every entry of that table to order 67 (`analysis/egjt96_wall_table.txt`; `analysis/check_wall_table.py` does the comparison).

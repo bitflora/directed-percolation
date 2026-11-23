@@ -26,3 +26,5 @@
 [2026-11-23 03:15:59] bond171_x done (exit 0)
 [2026-11-23 04:28:37] start site158 (all moments, u16, primes 0..13, 6 threads)
 [2026-11-23 06:16:44] site158 done (exit 0)
+[2026-11-23 09:46:51] start wall110 (u64, primes 0..2, 6 threads)
+[2026-11-23 16:37:55] wall110 done (exit 0)
