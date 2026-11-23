@@ -24,8 +24,9 @@
 //!   bit  c+1    : row s column c, for c >= j, not yet processed
 //! Processing column j rewrites bits (j, j+1) from (q, a) to (b_j, q_{j+1}).
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 mod modp;
@@ -55,6 +56,85 @@ pub struct Params {
     pub cheap_lo: bool, // experiment: lower end 2s + fixed for hashed targets, rely on trimming
     pub block: usize,   // parallel mode: kink steps per synchronization
     pub park: bool,     // single-thread mode: parked pass (--park): ~11% faster, ~46% more memory
+}
+
+/// Heap accounting (current and peak bytes), so reported peaks are measured
+/// rather than estimated from table sizes.
+pub static HEAP_CUR: AtomicUsize = AtomicUsize::new(0);
+pub static HEAP_PEAK: AtomicUsize = AtomicUsize::new(0);
+struct CountingAlloc;
+#[inline(always)]
+fn heap_add(n: usize) {
+    let c = HEAP_CUR.fetch_add(n, Ordering::Relaxed) + n;
+    HEAP_PEAK.fetch_max(c, Ordering::Relaxed);
+}
+unsafe impl GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        let q = System.alloc(l);
+        if !q.is_null() {
+            heap_add(l.size());
+        }
+        q
+    }
+    unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
+        let q = System.alloc_zeroed(l);
+        if !q.is_null() {
+            heap_add(l.size());
+        }
+        q
+    }
+    unsafe fn dealloc(&self, q: *mut u8, l: Layout) {
+        System.dealloc(q, l);
+        HEAP_CUR.fetch_sub(l.size(), Ordering::Relaxed);
+    }
+    unsafe fn realloc(&self, q: *mut u8, l: Layout, new: usize) -> *mut u8 {
+        let r = System.realloc(q, l, new);
+        if !r.is_null() {
+            if new >= l.size() {
+                heap_add(new - l.size());
+            } else {
+                HEAP_CUR.fetch_sub(l.size() - new, Ordering::Relaxed);
+            }
+        }
+        r
+    }
+}
+#[global_allocator]
+static GLOBAL: CountingAlloc = CountingAlloc;
+/// Return freed heap memory to the OS. The Windows process heap keeps freed
+/// small and medium blocks committed, so without this the working set runs
+/// well above the live heap after the many short-lived pieces of a parallel
+/// step. Off with DP_NO_TRIM=1 (diagnostics).
+#[cfg(windows)]
+fn trim_heap() {
+    use std::ffi::c_void;
+    #[repr(C)]
+    struct OptimizeInfo {
+        version: u32,
+        flags: u32,
+    }
+    extern "system" {
+        fn GetProcessHeap() -> *mut c_void;
+        fn HeapCompact(h: *mut c_void, flags: u32) -> usize;
+        fn HeapSetInformation(h: *mut c_void, class: i32, info: *mut c_void, len: usize) -> i32;
+    }
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var("DP_NO_TRIM").is_ok()) {
+        return;
+    }
+    unsafe {
+        let h = GetProcessHeap();
+        HeapCompact(h, 0);
+        let mut info = OptimizeInfo { version: 1, flags: 0 };
+        // HeapOptimizeResources = 3 (Windows 8.1 and later): decommit free memory
+        HeapSetInformation(h, 3, &mut info as *mut OptimizeInfo as *mut c_void, std::mem::size_of::<OptimizeInfo>());
+    }
+}
+#[cfg(not(windows))]
+fn trim_heap() {}
+
+fn heap_peak_mib() -> f64 {
+    HEAP_PEAK.load(Ordering::Relaxed) as f64 / 1048576.0
 }
 
 pub static BOUND_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -413,43 +493,47 @@ fn par_map<T: Send, F: Fn(usize) -> T + Sync>(count: usize, threads: usize, f: F
     out.into_inner().unwrap().into_iter().map(|x| x.unwrap()).collect()
 }
 
-/// For each target shard, the list of (source shard, index) whose group key
-/// hashes to it.
-fn bucket<F: Fn(u128) -> u128 + Sync>(
-    layer: &Layer,
+/// Move the states of `layer` into pieces by target shard of their group key,
+/// consuming the layer: each source shard is freed as soon as it has been
+/// split, and each piece as soon as its thread has stepped it, so a parallel
+/// step holds about one layer plus the pieces in flight instead of the whole
+/// old layer next to the whole new one. Pieces are sized exactly (two passes).
+fn split_layer<F: Fn(u128) -> u128 + Sync>(
+    layer: Layer,
     nshards: usize,
     threads: usize,
+    nm: usize,
     group: F,
-) -> Vec<Vec<(u32, u32)>> {
-    if nshards == 1 {
-        let mut v = Vec::with_capacity(layer_len(layer));
-        for (si, t) in layer.iter().enumerate() {
-            for i in 0..t.len() {
-                v.push((si as u32, i as u32));
-            }
-        }
-        return vec![v];
-    }
-    let parts: Vec<Vec<Vec<(u32, u32)>>> = par_map(layer.len(), threads, |si| {
-        let t = &layer[si];
-        let mut v: Vec<Vec<(u32, u32)>> = (0..nshards).map(|_| Vec::new()).collect();
+) -> Vec<std::sync::Mutex<Vec<Table>>> {
+    use std::sync::Mutex;
+    let srcs: Vec<Mutex<Option<Table>>> = layer.into_iter().map(|t| Mutex::new(Some(t))).collect();
+    let parts: Vec<Vec<Table>> = par_map(srcs.len(), threads, |si| {
+        let t = srcs[si].lock().unwrap().take().unwrap();
+        let mut dest: Vec<u32> = Vec::with_capacity(t.len());
+        let mut nk = vec![0usize; nshards];
+        let mut nc = vec![0usize; nshards];
         for i in 0..t.len() {
-            let g = group(t.key(i));
-            v[shard_of(g, nshards)].push((si as u32, i as u32));
+            let d = shard_of(group(t.key(i)), nshards);
+            dest.push(d as u32);
+            nk[d] += 1;
+            nc[d] += t.block(i).len();
+        }
+        let mut v: Vec<Table> = (0..nshards).map(|d| Table::with_exact(nm, nk[d], nc[d])).collect();
+        for i in 0..t.len() {
+            let (lo, hi) = t.window(i);
+            v[dest[i] as usize].push_copy(t.key(i), lo, hi, t.block(i));
         }
         v
     });
-    let mut out: Vec<Vec<(u32, u32)>> = (0..nshards).map(|_| Vec::new()).collect();
+    let mut out: Vec<Vec<Table>> = (0..nshards).map(|_| Vec::with_capacity(parts.len())).collect();
     for part in parts {
-        for (k, v) in part.into_iter().enumerate() {
-            if out[k].is_empty() {
-                out[k] = v;
-            } else {
-                out[k].extend_from_slice(&v);
+        for (k, t) in part.into_iter().enumerate() {
+            if t.len() > 0 {
+                out[k].push(t);
             }
         }
     }
-    out
+    out.into_iter().map(Mutex::new).collect()
 }
 
 /// Canonical member of {shape, mirror(shape)}.
@@ -505,6 +589,7 @@ pub fn run(p: &Params, m: Mod) -> Raw {
         t.coef_mut(idx, 0)[0] = if p.mirror { inv2 } else { 1 };
         t.finish();
     }
+    HEAP_PEAK.store(HEAP_CUR.load(Ordering::Relaxed), Ordering::Relaxed);
     let t0 = Instant::now();
     let mut peak_states = 0usize;
     let mut peak_bytes = 0usize;
@@ -584,17 +669,22 @@ pub fn run(p: &Params, m: Mod) -> Raw {
             let _ = mask;
             let jend = (j + p.block).min(wmax + 2);
             let touched: u128 = (if jend >= 127 { !0u128 } else { (2u128 << jend) - 1 }) & !((1u128 << j) - 1);
-            let buckets = bucket(&layer, nshards, threads, |k| k & !touched);
-            let src = &layer;
+            let pieces = split_layer(std::mem::take(&mut layer), nshards, threads, nm, |k| k & !touched);
             let new: Layer = par_map(nshards, threads, |ti| {
-                let list = &buckets[ti];
-                let mut cur = Table::new(nm, list.len() + list.len() / 2 + 16);
-                for &(si, i) in list {
-                    step_one(&src[si as usize], i as usize, &mut cur, j, s, p, m);
+                let list = std::mem::take(&mut *pieces[ti].lock().unwrap());
+                let cnt: usize = list.iter().map(|t| t.len()).sum();
+                let nc: usize = list.iter().map(|t| t.coefs()).sum();
+                let mut cur = Table::new(nm, cnt + cnt / 2 + 16);
+                cur.reserve_coefs(nc + nc / 8);
+                for src in list {
+                    for i in 0..src.len() {
+                        step_one(&src, i, &mut cur, j, s, p, m);
+                    }
                 }
                 cur.finish();
                 for jj in (j + 1)..jend {
                     let mut nt = Table::new(nm, cur.len() + cur.len() / 2 + 16);
+                    nt.reserve_coefs(cur.coefs() + cur.coefs() / 8);
                     for i in 0..cur.len() {
                         step_one(&cur, i, &mut nt, jj, s, p, m);
                     }
@@ -603,10 +693,10 @@ pub fn run(p: &Params, m: Mod) -> Raw {
                 }
                 cur
             });
-            peak_states = peak_states.max(layer_len(&layer) + layer_len(&new));
-            peak_bytes = peak_bytes.max(layer_bytes(&layer) + layer_bytes(&new));
-            drop(buckets);
+            peak_states = peak_states.max(layer_len(&new));
+            peak_bytes = peak_bytes.max(layer_bytes(&new));
             layer = new;
+            trim_heap();
             j = jend;
         }
         // row end: harvest singletons, normalize and canonicalize into row s+1
@@ -636,14 +726,18 @@ pub fn run(p: &Params, m: Mod) -> Raw {
             }
             new = nts;
         } else {
-            let buckets = bucket(&layer, nshards, threads, group);
-            let src = &layer;
+            let pieces = split_layer(std::mem::take(&mut layer), nshards, threads, nm, group);
             let results: Vec<(Table, Scratch)> = par_map(nshards, threads, |ti| {
-                let list = &buckets[ti];
-                let mut nt = Table::new(nm, list.len() + 16);
+                let list = std::mem::take(&mut *pieces[ti].lock().unwrap());
+                let cnt: usize = list.iter().map(|t| t.len()).sum();
+                let nc: usize = list.iter().map(|t| t.coefs()).sum();
+                let mut nt = Table::new(nm, cnt + 16);
+                nt.reserve_coefs(nc + nc / 8);
                 let mut sc = Scratch::new(n);
-                for &(si, i) in list {
-                    row_end_one(&src[si as usize], i as usize, &mut nt, &mut sc, t, p, m);
+                for src in list {
+                    for i in 0..src.len() {
+                        row_end_one(&src, i, &mut nt, &mut sc, t, p, m);
+                    }
                 }
                 nt.finish();
                 (nt, sc)
@@ -657,22 +751,25 @@ pub fn run(p: &Params, m: Mod) -> Raw {
             }
         }
         layer = new;
+        trim_heap();
         if p.verbose {
             eprintln!(
-                "row {:3} -> states {:>11}  peak {:>11}  peak MiB {:>8.1}  {:9.2}s",
+                "row {:3} -> states {:>11}  peak {:>11}  peak MiB {:>8.1}  heap peak MiB {:>8.1}  {:9.2}s",
                 t,
                 layer_len(&layer),
                 peak_states,
                 peak_bytes as f64 / 1048576.0,
+                heap_peak_mib(),
                 t0.elapsed().as_secs_f64()
             );
         }
     }
     if p.verbose {
         eprintln!(
-            "done: peak states {} peak MiB {:.1} {:.2}s  bound calls {}  state-steps {}",
+            "done: peak states {} peak MiB {:.1} heap peak MiB {:.1} {:.2}s  bound calls {}  state-steps {}",
             peak_states,
             peak_bytes as f64 / 1048576.0,
+            heap_peak_mib(),
             t0.elapsed().as_secs_f64(),
             BOUND_CALLS.load(Ordering::Relaxed),
             STATE_STEPS.load(Ordering::Relaxed)

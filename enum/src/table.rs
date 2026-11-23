@@ -49,6 +49,30 @@ impl Table {
             is_hashed: Vec::with_capacity(expect),
         }
     }
+    /// An append-only table (filled by `push_copy` only) with exact capacity.
+    pub fn with_exact(nm: usize, keys: usize, coefs: usize) -> Self {
+        Table {
+            nm,
+            keys: Vec::with_capacity(keys),
+            lo: Vec::with_capacity(keys),
+            hi: Vec::with_capacity(keys),
+            off: Vec::with_capacity(keys),
+            arena: Vec::with_capacity(coefs),
+            slots: Vec::new(),
+            mask: 0,
+            hashed: 0,
+            is_hashed: Vec::with_capacity(keys),
+        }
+    }
+    /// Coefficients stored (all moments).
+    pub fn coefs(&self) -> usize {
+        self.arena.len()
+    }
+    /// Reserve the arena up front (estimate from the sources), so it does not
+    /// grow by repeated reallocation, each briefly holding two copies.
+    pub fn reserve_coefs(&mut self, n: usize) {
+        self.arena.reserve_exact(n.saturating_sub(self.arena.len()));
+    }
     pub fn len(&self) -> usize {
         self.keys.len()
     }
