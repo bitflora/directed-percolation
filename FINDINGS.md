@@ -8,7 +8,7 @@ Running record of results for the directed percolation study. Each claim lists i
 - **Verified exact series:**
   - bond to order 156 for all four moment series (S, μ₀₁, μ₀₂, μ₂₀) (F4);
   - bond to order 171 for all four moment series, Jensen's own length (F10, F11, F12; μ₂₀ added on the second night);
-  - site to order 146 (F8).
+  - site to order 158 for all four moment series, Jensen's own length (F8, F13).
 
   Jensen reached 171 (bond) and 158 (site).
 - **Reproduction of the 1999 results.**
@@ -18,7 +18,7 @@ Running record of results for the directed percolation study. Each claim lists i
   - The site critical point from universality is 0.70548522, as he found (F5, F8).
 - **Gate (M2) passed.** Estimates of ν∥ and ν⊥ improve about 1.6–2× per 10 extra terms (fits over 90–171 terms), so 200–230 terms should give about one more significant digit (F5, F10, F11).
 - **Solvability.** There is no small linear ODE for any of the series (F6). On rings, the poles of the mean cluster size pinch toward p_c and cluster around the bulk non-physical singularities: a first look at the haruspicy route (F9).
-- **Second night (November 22–23).** μ₂₀ at 171 terms completes Jensen's set; every unbiased estimate, including 2ν⊥ = 2.1937077 and γ + 2ν⊥ = 4.4714139, agrees with his. The μ₂₀μ₀₂/μ₀₁² critical point (0.6447001905) sits 5 × 10⁻⁹ above the S and μ₀₂/μ₀₁ ones, inside his error bar; this gap is the clearest target for longer series. A split-layer parallel step cut peak memory by about 30% (F12).
+- **Second night (November 22–23).** μ₂₀ at 171 terms completes Jensen's set; every unbiased estimate, including 2ν⊥ = 2.1937077 and γ + 2ν⊥ = 4.4714139, agrees with his. The μ₂₀μ₀₂/μ₀₁² critical point (0.6447001905) sits 5 × 10⁻⁹ above the S and μ₀₂/μ₀₁ ones, inside his error bar; this gap is the clearest target for longer series. A split-layer parallel step cut peak memory by about 30% (F12). The site series then reached 158 terms in 1 h 48 min; every site estimate agrees with Jensen's, and biased approximants give p_c(site) = 0.70548521, against his 0.70548522(4) (F13).
 - **Compute decision (M4).** Measured: order 171 for S, μ₀₁ and μ₀₂ takes 12 min per prime with 6 threads and 2.2 GB on this laptop (F11), and parallel efficiency is about 60–75% (F7). Orders 200 and above need a large-memory machine; projections are in F7.
 
 ## F1. Independent ground truth for small orders (M0)
@@ -412,4 +412,49 @@ Peak working set, order 150, all moments, u16, 6 threads, measured with [analysi
 - Consistency check: biased at 0.644700185, (γ + 2ν⊥) − γ = 4.4714267 − 2.2777276 = 2.1936991, which matches the biased R2 value. So the two routes agree once the same p_c is used.
 - The 5 × 10⁻⁹ gap between the two series' critical points is the most useful target for longer series: shrinking it pins p_c and both ν's together.
 
-**Conclusion.** All four 1999 series are reproduced at full length, and every unbiased estimate agrees with Jensen's within his quoted errors. That finishes the reproduction goal for the bond lattice (plan goal 1). The site series remains at 146 against his 158.
+**Conclusion.** All four 1999 series are reproduced at full length, and every unbiased estimate agrees with Jensen's within his quoted errors. That finishes the reproduction goal for the bond lattice (plan goal 1). The site series was completed to 158 next (F13).
+
+## F13. Site series at Jensen's own length, 158 terms
+
+[results/series/site158.json](results/series/site158.json) holds all four site series (S, μ₀₁, μ₀₂, μ₂₀) to order 158, the length of Jensen's 1999 site series.
+
+**Verification.**
+- Fourteen 15-bit primes (u16 build, [analysis/site158_queue.sh](analysis/site158_queue.sh)) give a product above 2²¹⁰; the largest coefficient has 177 bits.
+- The leave-last-out check passes (crt.py).
+- All four order-146 site series (F8), computed with 31-bit primes by the older engine, are exact prefixes.
+
+**Cost** (all moments, `--threads 6 --block 6`):
+- Heap peak 1.34 GB per prime, the same for every prime.
+- 390–400 s per prime with the machine otherwise idle, and 800–890 s while the other job was running.
+- 1 h 48 min for all fourteen primes.
+
+**Unbiased estimates** ([results/analysis/site158_gate_report.md](results/analysis/site158_gate_report.md), K = 2 and 3, same settings as the bond analysis):
+
+| Quantity | This work, T = 146 | This work, T = 158 | Jensen site, T = 158 | Bond value (J99) |
+| --- | --- | --- | --- | --- |
+| x_c (S, μ₀₂/μ₀₁) | 0.7054851–0.7054853 | 0.7054851–0.7054852 | 0.70548515(20) | |
+| γ (S) | 2.27762 | 2.27758–2.27765 | 2.27765(6) | 2.277730 |
+| ν∥ (μ₀₂/μ₀₁) | 1.73380 | 1.73380–1.73382 | 1.73381(4) | 1.733847 |
+| 2ν⊥ (μ₂₀μ₀₂/μ₀₁²) | 2.19377 | 2.19376–2.19378 | 2.19377(5) | 2.193708 |
+| γ + 2ν⊥ (μ₂₀) | 4.47124 | 4.47124–4.47130 | | 4.471425 |
+
+Every site estimate agrees with Jensen's 158-term site values. The site exponents are still visibly drifting toward the bond values, as he noted. Measured from the bond values at 158 terms:
+- γ is 1.2 × 10⁻⁴ low and has nearly stopped moving;
+- ν∥ is 3.7 × 10⁻⁵ low and closes by about 1.3 × 10⁻⁶ per term;
+- 2ν⊥ is 6.1 × 10⁻⁵ high and closes by about 4 × 10⁻⁷ per term.
+
+The drift fits give error factors of 1.4× (ν∥) and 1.6× (2ν⊥) per 10 terms, against 1.9× for bond 2ν⊥ (F12). The site lattice is the slower route to the exponents.
+
+**The site critical point from universality** ([results/analysis/site158_biased.json](results/analysis/site158_biased.json)): biased approximants, scanning x_c and locating where each site exponent equals the bond value:
+
+| Series | Bond exponent imposed | 136 terms | 146 terms | 158 terms |
+| --- | --- | --- | --- | --- |
+| μ₀₂/μ₀₁ | ν∥ = 1.733847 | 0.70548523 | 0.70548523 | 0.70548523 |
+| μ₂₀μ₀₂/μ₀₁² | 2ν⊥ = 2.193708 | 0.70548516 | 0.70548519 | 0.70548520 |
+
+- Mean at 158 terms: 0.70548521 with a half-spread of 1.5 × 10⁻⁸. Jensen's biased estimate is p_c(site) = 0.70548522(4).
+- As at 146 terms, the biased S and μ₂₀ exponents peak just below the bond values (2.277715 and 4.471385, both near x_c = 0.7054852–0.7054853) and do not cross them, so they are not used.
+
+**Same pattern as bond.** The unbiased critical point from μ₂₀μ₀₂/μ₀₁² (0.70548526) sits above the ones from S and μ₀₂/μ₀₁ (0.70548515–0.70548518), the same ordering as the 5 × 10⁻⁹ gap on the bond lattice (F12), but about 20× wider here.
+
+**Conclusion.** Both of Jensen's 1999 series sets are now reproduced at full length (bond 171, site 158), with every estimate inside his quoted errors. Plan goal 1 (an independent, public reproduction) is complete. The series files are in [results/series/](results/series/).

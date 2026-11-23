@@ -9,7 +9,7 @@ Literature search completed November 21, 2026. Implementation started the same n
 
 Results so far are in [FINDINGS.md](FINDINGS.md), and the milestone status is at the top of [RESEARCH_PLAN.md](RESEARCH_PLAN.md).
 
-Headline: an independent implementation reproduced Jensen's 1999 bond results at his own length. All four moment series are verified to 171 terms, and p_c, γ, ν∥, 2ν⊥ and the moment exponents all agree within his error bars. The precision-gain gate passed, so extending to 200–230 terms is worth doing.
+Headline: an independent implementation reproduced Jensen's 1999 results at his own lengths. All four moment series are verified to 171 terms (bond) and 158 terms (site), and p_c, γ, ν∥, 2ν⊥ and the moment exponents all agree within his error bars, as does the site critical point from universality. The precision-gain gate passed, so extending to 200–230 terms is worth doing.
 
 Main findings from the literature search (computed results are in [FINDINGS.md](FINDINGS.md), summarized at its top):
 

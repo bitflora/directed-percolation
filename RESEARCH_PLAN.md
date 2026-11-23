@@ -2,14 +2,14 @@
 
 Status, morning of November 22, 2026:
 - M0 and the M2 gate are done.
-- M1 is done to order 171 (bond, all moments) and 146 (site). (Updated November 23.)
+- M1 is done: bond to order 171 and site to order 158, all moments, Jensen's full 1999 set. (Updated November 23.)
 - M3 is partly done.
 - M6 has started. Results are in [FINDINGS.md](FINDINGS.md). The plan follows the prior-art assessment in [REVIEW.md](REVIEW.md); source IDs refer to [SOURCES.md](SOURCES.md).
 
 | Milestone | Status |
 | --- | --- |
 | M0 ground truth | Done: three independent exact methods agree to order 15 (F1) |
-| M1 reimplementation | Done in [enum/](enum/README.md). Verified bond series to 171 terms, all four moments (Jensen's full 1999 set); site to 146 terms. At 171 terms every unbiased estimate agrees with Jensen's within his errors (FINDINGS F11, F12). Still to run: site at 158 |
+| M1 reimplementation | Done in [enum/](enum/README.md). Verified bond series to 171 terms, all four moments (Jensen's full 1999 set); site to 158 terms, all four moments. Every estimate at both lengths agrees with Jensen's within his errors (FINDINGS F11, F12, F13) |
 | M2 analysis and gate | Done. **Gate passed**: ν∥ and ν⊥ improve about 1.6–2× per 10 terms (FINDINGS F5) |
 | M3 engineering | Partly done (F2, F3): shape, mirror, zero-state and window-trimming reductions; mask bounds and exact lower ends for single-source targets; u32 and u16 builds, streaming and block-parallel steps. Not yet done: SIMD, out-of-core, Zbarsky sparsification, and measuring parallel efficiency on an idle machine |
 | M4 compute decision | Open; measured projections in FINDINGS |
