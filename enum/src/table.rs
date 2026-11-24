@@ -101,6 +101,11 @@ impl<K: Key> Table<K> {
     }
     /// Drop the per-state offsets of a finished table; afterwards its blocks
     /// can only be read in order, with `iter`.
+    /// A sequential table from its parts (read back from a spill file).
+    #[allow(dead_code)] // used by dpwall only
+    pub fn from_seq_parts(nm: usize, keys: Vec<K>, lo: Vec<u8>, hi: Vec<u8>, arena: Vec<C>) -> Self {
+        Table { nm, keys, lo, hi, off: Vec::new(), arena, slots: Vec::new(), mask: 0, hashed: 0, is_hashed: Vec::new(), seq: true }
+    }
     #[allow(dead_code)] // used by dpwall only
     pub fn drop_offsets(&mut self) {
         assert!(self.slots.is_empty(), "call after finish");

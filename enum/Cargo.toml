@@ -6,6 +6,8 @@ edition = "2021"
 [features]
 u32 = []
 u16 = []
+# dpwall: u128 keys instead of u64, for n > 121 (8 more bytes per state)
+wide = []
 
 [[bin]]
 name = "dpenum"

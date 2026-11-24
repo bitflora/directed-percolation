@@ -37,6 +37,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 mod modp;
+mod spill;
 mod table;
 
 use modp::{Mod, C};
@@ -50,10 +51,16 @@ struct Params {
     shards: usize,
     block: usize,
     verbose: bool,
+    spill: Option<std::path::PathBuf>,
+    spill_above: u64, // bytes: generations larger than this go to disk
 }
 
-/// Keys are u64: row t uses bits up to t/2 + 3, so n <= 120 (checked in main).
+/// Row t uses key bits up to t/2 + 3: u64 keys allow n <= 121, and the
+/// `wide` feature (u128) n <= 249 (checked in main).
+#[cfg(not(feature = "wide"))]
 type Key = u64;
+#[cfg(feature = "wide")]
+type Key = u128;
 type Layer = Vec<Table<Key>>;
 
 fn par_map<T: Send, F: Fn(usize) -> T + Sync>(count: usize, threads: usize, f: F) -> Vec<T> {
@@ -194,17 +201,170 @@ fn step(srcs: &[Table<Key>], t: usize, j: usize, p: &Params, m: Mod) -> Table<Ke
     nt
 }
 
-fn run(p: &Params, m: Mod) -> [Vec<C>; 6] {
-    let n = p.n;
-    let mut ser: [Vec<C>; 6] = std::array::from_fn(|_| vec![0 as C; n + 1]);
-    ser[1][0] = 1; // S: the origin
+/// Bits touched by steps j..jend of row t: P-1 of the first to P of the last.
+fn touched(t: usize, j: usize, jend: usize) -> Key {
+    let e = if t % 2 == 0 { 1 } else { 0 };
+    let lo_bit = j + 1 - e;
+    let hi_bit = jend - 1 + 2 - e;
+    ((1 << (hi_bit + 1)) - 1) & !((1 << lo_bit) - 1)
+}
+
+/// Blocks of steps (t, j, jend) in sweep order.
+fn blocks(n: usize, block: usize) -> Vec<(usize, usize, usize)> {
+    let mut v = Vec::new();
+    for t in 0..n {
+        let last = t / 2;
+        let mut j = 0;
+        while j <= last {
+            let jend = (j + block).min(last + 1);
+            v.push((t, j, jend));
+            j = jend;
+        }
+    }
+    v
+}
+
+/// Contributions of the completed row t1 (children c at bit c + 1) to the
+/// six series.
+fn accumulate(s: &Table<Key>, t1: usize, n: usize, m: Mod) -> [Vec<C>; 6] {
+    let mut acc: [Vec<C>; 6] = std::array::from_fn(|_| vec![0 as C; n + 1]);
+    for (key, lo, _, w) in s.iter() {
+        let k = key.count_ones();
+        let neg = k % 2 == 0;
+        for (d, &c) in w.iter().enumerate() {
+            let o = lo as usize + d;
+            acc[0][o] = if neg { m.sub(acc[0][o], c) } else { m.add(acc[0][o], c) };
+        }
+        if k == 1 {
+            let c = key.trailing_zeros() as u64 - 1;
+            let x = 2 * c + (t1 as u64 % 2);
+            let f = [1, x, x * x, t1 as u64, (t1 * t1) as u64];
+            for (mm, &fac) in f.iter().enumerate() {
+                let fm = m.from_i64(fac as i64);
+                for (d, &c) in w.iter().enumerate() {
+                    let o = lo as usize + d;
+                    acc[mm + 1][o] = m.add(acc[mm + 1][o], m.mul(c, fm));
+                }
+            }
+        }
+    }
+    acc
+}
+
+fn add_series(ser: &mut [Vec<C>; 6], a: &[Vec<C>; 6], m: Mod) {
+    for (s, v) in ser.iter_mut().zip(a.iter()) {
+        for (x, &y) in s.iter_mut().zip(v) {
+            *x = m.add(*x, y);
+        }
+    }
+}
+
+fn first_table() -> Table<Key> {
     // row 0: parent 0 at bit 0 - 1 + 2 = 1
     let mut first = Table::new(1, 1);
     let (idx, _, _) = first.get_or_insert(1 << 1, |_| Some((0, 0))).unwrap();
     first.coef_mut(idx, 0)[0] = 1;
     first.finish();
     first.drop_offsets();
-    let mut layer: Layer = vec![first];
+    first
+}
+
+/// As `run`, but each block reads its input one shard at a time and splits
+/// its output straight into the next generation, which goes to disk when
+/// the current one exceeds `spill_above`. Memory holds only the shards in
+/// flight (about threads x 2 x layer / shards) plus the write buffers.
+fn run_spill(p: &Params, m: Mod) -> [Vec<C>; 6] {
+    let n = p.n;
+    let dir = p.spill.as_deref().unwrap();
+    let mut ser: [Vec<C>; 6] = std::array::from_fn(|_| vec![0 as C; n + 1]);
+    ser[1][0] = 1; // S: the origin
+    let bl = blocks(n, p.block);
+    let ns = p.shards;
+    let t0 = Instant::now();
+    let mut gen: spill::Gen<Key> = spill::Gen::new(None, 0, ns);
+    let (t, j, jend) = bl[0];
+    let tc = touched(t, j, jend);
+    spill::write_split(&first_table(), |k| k & !tc, &gen);
+    let (mut peak_states, mut peak_gen, mut peak_shard, mut io) = (0usize, 0u64, 0usize, 0u64);
+    for (bi, &(t, j, jend)) in bl.iter().enumerate() {
+        let e = if t % 2 == 0 { 1 } else { 0 };
+        let row_end = jend == t / 2 + 1;
+        let next = bl.get(bi + 1).map(|&(t2, j2, je2)| touched(t2, j2, je2));
+        let to_disk = gen.bytes() > p.spill_above;
+        let out: spill::Gen<Key> = spill::Gen::new(if to_disk { Some(dir) } else { None }, bi + 1, ns);
+        let res: Vec<(usize, usize, Option<[Vec<C>; 6]>)> = par_map(ns, p.threads, |d| {
+            let Some(src) = gen.take(d) else {
+                return (0, 0, None);
+            };
+            let mut cur = step(std::slice::from_ref(&src), t, j, p, m);
+            let mem = src.bytes() + cur.bytes();
+            drop(src);
+            for jj in j + 1..jend {
+                cur = step(std::slice::from_ref(&cur), t, jj, p, m);
+            }
+            let acc = if row_end { Some(accumulate(&cur, t + 1, n, m)) } else { None };
+            if row_end && e == 1 {
+                cur.map_keys(|k| k << 1); // relabel for row t+1
+            }
+            if let Some(tc) = next {
+                spill::write_split(&cur, |k| k & !tc, &out);
+            }
+            (cur.len(), mem.max(cur.bytes()), acc)
+        });
+        out.close();
+        if gen.on_disk {
+            io += gen.bytes();
+        }
+        if out.on_disk {
+            io += out.bytes();
+        }
+        let mut states = 0;
+        for (st, mem, acc) in res {
+            states += st;
+            peak_shard = peak_shard.max(mem);
+            if let Some(a) = acc {
+                add_series(&mut ser, &a, m);
+            }
+        }
+        peak_states = peak_states.max(states);
+        peak_gen = peak_gen.max(out.bytes());
+        if p.verbose && row_end {
+            eprintln!(
+                "row {:3} states {:10} layer MiB {:8.1} {} peak states {:10} peak layer MiB {:8.1} peak shard MiB {:6.1} disk I/O GiB {:7.2} {:8.1}s",
+                t + 1,
+                states,
+                out.bytes() as f64 / 1048576.0,
+                if out.on_disk { "disk" } else { "mem " },
+                peak_states,
+                peak_gen as f64 / 1048576.0,
+                peak_shard as f64 / 1048576.0,
+                io as f64 / 1073741824.0,
+                t0.elapsed().as_secs_f64()
+            );
+        }
+        gen = out; // the spent generation's files were deleted as its shards were read
+    }
+    if p.verbose {
+        eprintln!(
+            "done: peak states {} peak layer MiB {:.1} peak shard MiB {:.1} disk I/O GiB {:.2} {:.2}s",
+            peak_states,
+            peak_gen as f64 / 1048576.0,
+            peak_shard as f64 / 1048576.0,
+            io as f64 / 1073741824.0,
+            t0.elapsed().as_secs_f64()
+        );
+    }
+    ser
+}
+
+fn run(p: &Params, m: Mod) -> [Vec<C>; 6] {
+    if p.spill.is_some() {
+        return run_spill(p, m);
+    }
+    let n = p.n;
+    let mut ser: [Vec<C>; 6] = std::array::from_fn(|_| vec![0 as C; n + 1]);
+    ser[1][0] = 1; // S: the origin
+    let mut layer: Layer = vec![first_table()];
     let t0 = Instant::now();
     let mut peak_states = 0usize;
     let mut peak_bytes = 0usize;
@@ -214,11 +374,8 @@ fn run(p: &Params, m: Mod) -> [Vec<C>; 6] {
         let mut j = 0;
         while j <= last {
             let jend = (j + p.block).min(last + 1);
-            // bits touched by steps j..jend: P-1 of the first to P of the last
-            let lo_bit = j + 1 - e;
-            let hi_bit = jend - 1 + 2 - e;
-            let touched: Key = ((1 << (hi_bit + 1)) - 1) & !((1 << lo_bit) - 1);
-            let pieces = split_layer(std::mem::take(&mut layer), p.shards, p.threads, |k| k & !touched);
+            let tc = touched(t, j, jend);
+            let pieces = split_layer(std::mem::take(&mut layer), p.shards, p.threads, |k| k & !tc);
             layer = par_map(pieces.len(), p.threads, |si| {
                 let mut srcs = std::mem::take(&mut *pieces[si].lock().unwrap());
                 let mut cur = step(&srcs, t, j, p, m);
@@ -236,37 +393,9 @@ fn run(p: &Params, m: Mod) -> [Vec<C>; 6] {
         }
         // row t+1 is complete: children c at bit c + 1
         let t1 = t + 1;
-        let parts: Vec<[Vec<C>; 6]> = par_map(layer.len(), p.threads, |si| {
-            let s = &layer[si];
-            let mut acc: [Vec<C>; 6] = std::array::from_fn(|_| vec![0 as C; n + 1]);
-            for (key, lo, _, w) in s.iter() {
-                let k = key.count_ones();
-                let neg = k % 2 == 0;
-                for (d, &c) in w.iter().enumerate() {
-                    let o = lo as usize + d;
-                    acc[0][o] = if neg { m.sub(acc[0][o], c) } else { m.add(acc[0][o], c) };
-                }
-                if k == 1 {
-                    let c = key.trailing_zeros() as u64 - 1;
-                    let x = 2 * c + (t1 as u64 % 2);
-                    let f = [1, x, x * x, t1 as u64, (t1 * t1) as u64];
-                    for (mm, &fac) in f.iter().enumerate() {
-                        let fm = m.from_i64(fac as i64);
-                        for (d, &c) in w.iter().enumerate() {
-                            let o = lo as usize + d;
-                            acc[mm + 1][o] = m.add(acc[mm + 1][o], m.mul(c, fm));
-                        }
-                    }
-                }
-            }
-            acc
-        });
+        let parts: Vec<[Vec<C>; 6]> = par_map(layer.len(), p.threads, |si| accumulate(&layer[si], t1, n, m));
         for a in parts {
-            for (s, v) in ser.iter_mut().zip(a.iter()) {
-                for (x, &y) in s.iter_mut().zip(v) {
-                    *x = m.add(*x, y);
-                }
-            }
+            add_series(&mut ser, &a, m);
         }
         // relabel for row t+1: parent q at bit q - e' + 2, e' = 1 - e
         if e == 1 {
@@ -303,6 +432,9 @@ fn main() {
     let mut verbose = false;
     let mut threads = 1usize;
     let mut block = 6usize;
+    let mut shards: Option<usize> = None;
+    let mut spill: Option<std::path::PathBuf> = None;
+    let mut spill_above_mib = 256u64;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -326,6 +458,18 @@ fn main() {
                 block = args[i + 1].parse().unwrap();
                 i += 1;
             }
+            "--shards" => {
+                shards = Some(args[i + 1].parse().unwrap());
+                i += 1;
+            }
+            "--spill" => {
+                spill = Some(args[i + 1].clone().into());
+                i += 1;
+            }
+            "--spill-above" => {
+                spill_above_mib = args[i + 1].parse().unwrap();
+                i += 1;
+            }
             "-o" => {
                 out = Some(args[i + 1].clone());
                 i += 1;
@@ -336,9 +480,15 @@ fn main() {
         i += 1;
     }
     // row t uses key bits up to t/2 + 3 (relabelled), and rows run to n - 1
-    assert!((n - 1) / 2 + 3 < 64, "keys are u64: n <= 121");
-    let shards = if threads <= 1 { 1 } else { threads * 8 };
-    let p = Params { n, threads, shards, block, verbose };
+    let key_bits = 8 * std::mem::size_of::<Key>();
+    assert!((n - 1) / 2 + 3 < key_bits, "keys are u{key_bits}: n too large (build with --features wide)");
+    assert!(n <= 249, "windows are u8");
+    // spill mode: many shards keep the shards in flight small
+    let shards = shards.unwrap_or(if spill.is_some() { 64 } else if threads <= 1 { 1 } else { threads * 8 });
+    if let Some(d) = &spill {
+        std::fs::create_dir_all(d).expect("create spill directory");
+    }
+    let p = Params { n, threads, shards, block, verbose, spill, spill_above: spill_above_mib << 20 };
     let primes = modp::primes(first_prime + nprimes);
     for &pr in &primes[first_prime..] {
         let m = Mod::new(pr);

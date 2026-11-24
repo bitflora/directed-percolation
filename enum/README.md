@@ -118,6 +118,17 @@ python ../analysis/crt.py wall110.jsonl -o wall110.json
 
 At order 100 (8.0 M states): v1 u64 about 616 MiB, v2 u64 525 MiB, v2 u32 298 MiB (and 239 s against 393 s, from the halved memory traffic). Order 120 with v2 u32 is projected at about 4 GB and needs five 31-bit primes ([analysis/wall120_queue.sh](../analysis/wall120_queue.sh)).
 
-**Why not swap.** Each block reads the whole layer once and writes a new one, a cyclic scan. Under paging that is the worst case: the least recently used page is the next one needed, faults are small and synchronous, and Windows wastes time compressing incompressible residues. Past what fits in RAM, the right route is spilling the per-target pieces of `split_layer` to files (an external partition with one sequential read and write per block).
+**Why not swap.** Each block reads the whole layer once and writes a new one, a cyclic scan. Under paging that is the worst case: the least recently used page is the next one needed, faults are small and synchronous, and Windows wastes time compressing incompressible residues.
+
+**Spilling to disk (`--spill DIR`).** Each block reads its input one target shard at a time, runs its steps, and splits the output by the next block's shard grouping straight into the next generation ([src/spill.rs](src/spill.rs)). A generation larger than `--spill-above` MiB (default 256) is written to disk as one file per shard, appended in chunks; reading a shard deletes its file. Smaller generations stay in memory through the same code path, so the early rows create no files. Each spilled block is one sequential read and one sequential write of the layer.
+- Memory holds only the shards in flight, about threads × 2 × layer ÷ shards. `--shards` defaults to 64 in spill mode; raise it for large layers. Every shard costs one file create and delete per block, so very many shards make small layers slow.
+- Disk needs about two layers' worth of space.
+- Beyond n = 121 the keys no longer fit in u64: build with `--features wide` (u128 keys, 8 more bytes per state). Features combine, for example `--features u32,wide`.
+- Order 100, u32, 4 threads, one prime, on a busy machine: in memory, peak working set 600 MiB and 695 s; spilled above 32 MiB, peak working set 155 MiB, 761 s (+9.5%) and 32 GiB of disk traffic. The outputs are identical. All-disk and `wide` runs reproduce wall110 exactly at order 80.
+
+```
+cargo build --release --bin dpwall --features u32,wide --target-dir target_u32_wide
+target_u32_wide/release/dpwall -n 130 --threads 6 --spill D:/dpspill --shards 256 --primes 6 -v -o wall130.jsonl
+```
 
 **Tests.** `analysis/wall_ground_truth.py N --check` computes the same series by the exact Domany–Kinzel transfer matrix and by the path-union expansion in Python, and compares both with Table 1 of Essam et al. (1996). The engine reproduces the fixture `analysis/wall_order30.json` and every entry of that table to order 67 (`analysis/egjt96_wall_table.txt`; `analysis/check_wall_table.py` does the comparison).
