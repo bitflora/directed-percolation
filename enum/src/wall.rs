@@ -163,6 +163,8 @@ fn step(srcs: &[Table<Key>], t: usize, j: usize, p: &Params, m: Mod) -> Table<Ke
     let n = p.n;
     let total: usize = srcs.iter().map(|s| s.len()).sum();
     let mut nt = Table::new(1, total + total / 4);
+    let nc: usize = srcs.iter().map(|s| s.coefs()).sum();
+    nt.reserve_coefs(nc + nc / 8);
     let bp: Key = 1 << pb;
     let bl: Key = 1 << (pb - 1);
     for s in srcs {
@@ -196,8 +198,7 @@ fn step(srcs: &[Table<Key>], t: usize, j: usize, p: &Params, m: Mod) -> Table<Ke
             add_to(&mut nt, key | bl, w, slo, 2, neg, t, above, n, m);
         }
     }
-    nt.finish();
-    nt.drop_offsets();
+    nt.finish_seq();
     nt
 }
 
@@ -264,8 +265,7 @@ fn first_table() -> Table<Key> {
     let mut first = Table::new(1, 1);
     let (idx, _, _) = first.get_or_insert(1 << 1, |_| Some((0, 0))).unwrap();
     first.coef_mut(idx, 0)[0] = 1;
-    first.finish();
-    first.drop_offsets();
+    first.finish_seq();
     first
 }
 

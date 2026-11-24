@@ -196,9 +196,7 @@ def analyse_one(a, K, L, degs, guess, theta=None, window=0.05):
                     exponent=float(lam.mid()), others=others)
 
 
-def biased_exponent(a, K, L, degs, xc, theta=None):
-    """Exponent at a fixed critical point xc (Fraction), from a biased DA."""
-    res = approximant(a, K, L, degs, theta, bias=xc)
+def _biased_value(res, K, xc, digits=10):
     if res is None:
         return None
     Q, P = res
@@ -207,9 +205,14 @@ def biased_exponent(a, K, L, degs, xc, theta=None):
     dq = qk.derivative()
     mu = K - 1 - flint.arb_poly(Q[K - 1])(x) / (x * dq(x))
     lam = -mu
-    if not _rel_ok(lam, 10):
+    if not _rel_ok(lam, digits):
         return None
     return float(lam.mid())
+
+
+def biased_exponent(a, K, L, degs, xc, theta=None):
+    """Exponent at a fixed critical point xc (Fraction), from a biased DA."""
+    return _biased_value(approximant(a, K, L, degs, theta, bias=xc), K, xc)
 
 
 def biased_ensemble(a, K, Ls, Ms, xc):
@@ -221,6 +224,82 @@ def biased_ensemble(a, K, Ls, Ms, xc):
                 v = biased_exponent(a, K, L, degs, xc, theta)
                 if v is not None and abs(v) < 50:
                     out.append(v)
+    return out
+
+
+def _prepare_biased(a, K, L, degs, theta):
+    """Solve A*x=b and A*v=e_last together, before replacing A's last row.
+
+    All but the last coefficient equation are shared by a biased family.
+    The unbiased final equation supplies a convenient nonsingular base; it
+    need not exist for every family, so callers retain the direct solver.
+    """
+    M = sum(d + 1 for d in degs) + L
+    if M > len(a):
+        return None
+    cols = [("q", i, j) for i in range(K+1)
+            for j in range(1 if i == K else 0, degs[i]+1)]
+    cols += [("p", j) for j in range(L+1)]
+    zero = flint.arb(0)
+    rows = [[(theta[c[1]][n-c[2]] if n >= c[2] else zero) if c[0] == "q"
+             else flint.arb(-1 if c[1] == n else 0) for c in cols] for n in range(M)]
+    rhs = flint.arb_mat([[-theta[K][n], flint.arb(int(n == M-1))] for n in range(M)])
+    try:
+        sol = flint.arb_mat(rows).solve(rhs)
+    except (ZeroDivisionError, ValueError):
+        return None
+    return cols, [sol[j, 0] for j in range(M)], [sol[j, 1] for j in range(M)]
+
+
+def _apply_bias(basis, K, L, degs, xc):
+    """Replace the last equation with Q_K(xc)=0 using ball arithmetic."""
+    cols, base, direction = basis
+    x = _to_arb(xc)
+    weights = [(j, x ** c[2]) for j, c in enumerate(cols) if c[0] == "q" and c[1] == K]
+    denom = sum((direction[j] * w for j, w in weights), flint.arb(0))
+    if not denom.is_finite() or denom.contains(0):
+        return None
+    alpha = (-1 - sum(base[j] * w for j, w in weights)) / denom
+    values = [b + d * alpha for b, d in zip(base, direction)]
+    Q = [[None] * (d+1) for d in degs]
+    Q[K][0] = flint.arb(1)
+    P = [None] * (L+1)
+    for value, c in zip(values, cols):
+        if c[0] == "q":
+            Q[c[1]][c[2]] = value
+        else:
+            P[c[1]] = value
+    return Q, P
+
+
+def biased_ensembles(a, K, Ls, Ms, xcs):
+    """One ensemble per bias, sharing a solve for each degree assignment.
+
+    Keep degree order and filtering identical to biased_ensemble. Updates
+    must determine the exponent to 30 digits; singular or poorly resolved
+    families fall back to the original biased solve and its accuracy gate.
+    Only one family's basis is retained at a time.
+    """
+    xcs = list(xcs)
+    if not xcs:
+        return []
+    if len(xcs) == 1:
+        return [biased_ensemble(a, K, Ls, Ms, xcs[0])]
+    theta = _theta_powers(a, K)
+    Ls = tuple(Ls)
+    out = [[] for _ in xcs]
+    for M in Ms:
+        for L in Ls:
+            for degs in degree_sets(M, K, L):
+                basis = _prepare_biased(a, K, L, degs, theta)
+                for xc, values in zip(xcs, out):
+                    v = None
+                    if basis is not None:
+                        v = _biased_value(_apply_bias(basis, K, L, degs, xc), K, xc, digits=30)
+                    if v is None:
+                        v = biased_exponent(a, K, L, degs, xc, theta)
+                    if v is not None and abs(v) < 50:
+                        values.append(v)
     return out
 
 

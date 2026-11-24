@@ -256,6 +256,15 @@ impl<K: Key> Table<K> {
     }
     /// Drop dead entries and the hash index (call when construction is done).
     pub fn finish(&mut self) {
+        self.finish_impl(false);
+    }
+    /// Compact into sequential storage without shrinking offsets only to
+    /// discard them immediately. The coefficients and trimming are identical.
+    #[allow(dead_code)] // used by dpwall only
+    pub fn finish_seq(&mut self) {
+        self.finish_impl(true);
+    }
+    fn finish_impl(&mut self, sequential: bool) {
         self.slots = Vec::new();
         self.mask = 0;
         self.is_hashed = Vec::new();
@@ -301,11 +310,16 @@ impl<K: Key> Table<K> {
         self.keys.truncate(w);
         self.lo.truncate(w);
         self.hi.truncate(w);
-        self.off.truncate(w);
         self.keys.shrink_to_fit();
         self.lo.shrink_to_fit();
         self.hi.shrink_to_fit();
-        self.off.shrink_to_fit();
+        if sequential {
+            self.off = Vec::new();
+            self.seq = true;
+        } else {
+            self.off.truncate(w);
+            self.off.shrink_to_fit();
+        }
     }
     /// Rewrite every key. Only for tables without a hash index (after
     /// `finish`, or built by `push_copy`).
@@ -350,5 +364,96 @@ impl Table<u128> {
             w = w.max(128 - k.leading_zeros() as usize);
         }
         w
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn compaction_case<K: Key>(keys: [K; 5]) {
+        let m = Mod::new(crate::modp::primes(1)[0]);
+        for (nm, sequential) in [(1, false), (3, false), (1, true), (3, true)] {
+            let mut t = Table::new(nm, 1);
+            let (cancelled, _, _) = t.get_or_insert(keys[0], |_| Some((2, 6))).unwrap();
+            let c = [0 as C, 3, 4, 0, 0];
+            t.accumulate(cancelled, 0, 0, &c, false, m);
+            t.accumulate(cancelled, 0, 0, &c, true, m);
+            assert!(t.get_or_insert(keys[1], |_| None).is_none());
+            let live = t.push_unique(keys[2], 3, 7);
+            t.coef_mut(live, 0)[2] = 7;
+            if nm == 3 {
+                t.coef_mut(live, 2)[1] = 9;
+                t.coef_mut(live, 1)[3] = 11;
+            }
+            t.push_copy(keys[3], 8, 9, &vec![0; nm * 2]);
+            let mut last = vec![0; nm * 4];
+            last[0] = 5;
+            last[nm * 4 - 1] = 6;
+            t.push_copy(keys[4], 10, 13, &last);
+            if sequential { t.finish_seq(); } else { t.finish(); }
+            assert_eq!(t.len(), 2);
+            assert!(t.key(0) == keys[2] && t.key(1) == keys[4]);
+            let (window, expected) = if nm == 1 { ((5, 5), vec![7]) }
+                else { ((4, 6), vec![0, 7, 0, 0, 0, 11, 9, 0, 0]) };
+            assert_eq!(t.window(0), window);
+            assert_eq!(t.iter().next().unwrap().3, expected);
+            assert_eq!(t.window(1), (10, 13));
+            assert_eq!(t.iter().nth(1).unwrap().3, last);
+            if !sequential {
+                assert_eq!(t.block(0), expected);
+                assert_eq!(t.block(1), last);
+            }
+            let snapshot: Vec<_> = t.iter().map(|(k, l, h, b)| (k, l, h, b.to_vec())).collect();
+            if sequential {
+                assert!(t.seq && t.off.is_empty());
+            } else {
+                t.drop_offsets();
+            }
+            for ((key, lo, hi, block), (ek, el, eh, eb)) in t.iter().zip(snapshot) {
+                assert!(key == ek);
+                assert_eq!((lo, hi, block), (el, eh, eb.as_slice()));
+            }
+            assert!(t.off.is_empty());
+        }
+        let mut empty = Table::<K>::new(1, 0);
+        empty.finish();
+        empty.drop_offsets();
+        assert_eq!(empty.iter().count(), 0);
+    }
+
+    #[test]
+    fn compaction_preserves_moments_and_sequential_blocks() {
+        compaction_case([1u64, 2, 3, 4, 5]);
+        compaction_case([1u128 << 100, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn hash_growth_and_arena_reservation_preserve_moments() {
+        let mut t = Table::<u128>::new(3, 1);
+        t.reserve_coefs(512);
+        for value in 1..=40 {
+            let key = (1u128 << 100) | value;
+            let (i, _, _) = t.get_or_insert(key, |_| Some((2, 4))).unwrap();
+            t.coef_mut(i, 0)[0] = value as C;
+            t.coef_mut(i, 2)[2] = (value + 1) as C;
+        }
+        for value in 1..=40 {
+            let key = (1u128 << 100) | value;
+            let (i, _, _) = t.get_or_insert(key, |_| panic!("lost hashed entry")).unwrap();
+            assert_eq!(t.coef(i, 0), &[value as C, 0, 0]);
+            assert_eq!(t.coef(i, 2), &[0, 0, (value + 1) as C]);
+        }
+        t.finish_seq();
+        assert_eq!(t.len(), 40);
+        for (value, (key, lo, hi, block)) in (1..=40).zip(t.iter()) {
+            assert_eq!(key, (1u128 << 100) | value);
+            assert_eq!((lo, hi), (2, 4));
+            assert_eq!(block, &[value as C, 0, 0, 0, 0, 0, 0, 0, (value + 1) as C]);
+        }
+        let mut empty = Table::<u64>::new(1, 0);
+        empty.finish_seq();
+        assert!(empty.off.is_empty());
+        assert_eq!(empty.iter().count(), 0);
     }
 }

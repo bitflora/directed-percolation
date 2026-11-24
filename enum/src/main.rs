@@ -25,6 +25,7 @@
 //! Processing column j rewrites bits (j, j+1) from (q, a) to (b_j, q_{j+1}).
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
@@ -47,6 +48,7 @@ pub struct Params {
     pub tmax: usize,
     pub moments: usize, // 1 (S, mu01, mu02 only) or 3 (also mu20)
     pub verbose: bool,
+    pub profile: bool, // DP_PROFILE=1: detailed counters and per-bound timing
     pub loose: bool, // testing only: disable order pruning (keep only the row limit)
     pub mirror: bool,
     pub threads: usize,
@@ -143,6 +145,32 @@ pub static STATE_STEPS: AtomicU64 = AtomicU64::new(0);
 pub static SLACK: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 /// Diagnostics: nanoseconds in step loops, in finish(), and identity copies.
 pub static PROF: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+thread_local! {
+    // Four profile counters plus the bound-call count. Merge once per worker,
+    // rather than contending on shared cache lines for each state.
+    static LOCAL_PROF: Cell<[u64; 5]> = const { Cell::new([0; 5]) };
+}
+
+#[inline]
+fn profile_add(k: usize, value: u64) {
+    LOCAL_PROF.with(|local| {
+        let mut counters = local.get();
+        counters[k] += value;
+        local.set(counters);
+    });
+}
+
+fn flush_profile() {
+    let counters = LOCAL_PROF.with(|local| local.replace([0; 5]));
+    for k in 0..4 {
+        if counters[k] != 0 {
+            PROF[k].fetch_add(counters[k], Ordering::Relaxed);
+        }
+    }
+    if counters[4] != 0 {
+        BOUND_CALLS.fetch_add(counters[4], Ordering::Relaxed);
+    }
+}
 
 /// Minimum number of windows of length d covering intervals [l, r] (r - l <= 1),
 /// a lower bound on the number of distinct descendants (ancestors) after d
@@ -183,7 +211,7 @@ mod tests {
     use super::*;
     fn params(n: usize, model: Model) -> Params {
         let tmax = if model == Model::Bond { n / 2 } else { (n + 1) / 2 };
-        Params { n, model, tmax, moments: 3, verbose: false, loose: false, mirror: true,
+        Params { n, model, tmax, moments: 3, verbose: false, profile: false, loose: false, mirror: true,
                  threads: 1, shards: 1, slack: false, nosign: false, cheap_lo: false, block: 8, park: true }
     }
 
@@ -245,10 +273,11 @@ pub fn bound(key: u128, j: usize, s: usize, p: &Params) -> Option<(u32, u32)> {
 /// only one source produces inherits the source's trimmed lower end plus the
 /// degree shift), which skips the past-cover loop.
 pub fn bound_with(key: u128, j: usize, s: usize, p: &Params, lo_known: Option<u32>) -> Option<(u32, u32)> {
-    if p.verbose {
+    if p.profile {
         let t0 = Instant::now();
         let r = bound_inner(key, j, s, p, lo_known);
-        PROF[3].fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        profile_add(3, t0.elapsed().as_nanos() as u64);
+        profile_add(4, 1);
         return r;
     }
     bound_inner(key, j, s, p, lo_known)
@@ -284,7 +313,6 @@ fn cover_mask(mut fixed: u128, mut fuzzy: u128, d: u32) -> u32 {
 ///   future: fixed = (key bits <= j) << 1, fuzzy = key bits > j
 #[inline]
 fn bound_inner(key: u128, j: usize, s: usize, p: &Params, lo_known: Option<u32>) -> Option<(u32, u32)> {
-    BOUND_CALLS.fetch_add(1, Ordering::Relaxed);
     let below_j: u128 = if j >= 128 { !0 } else { (1u128 << j) - 1 };
     let upto_j: u128 = if j >= 127 { !0 } else { (2u128 << j) - 1 };
     let past_fixed = key & !below_j;
@@ -480,13 +508,16 @@ fn par_map<T: Send, F: Fn(usize) -> T + Sync>(count: usize, threads: usize, f: F
     let out: Mutex<Vec<Option<T>>> = Mutex::new((0..count).map(|_| None).collect());
     std::thread::scope(|sc| {
         for _ in 0..threads.min(count) {
-            sc.spawn(|| loop {
-                let i = next.fetch_add(1, Ordering::Relaxed);
-                if i >= count {
-                    break;
+            sc.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= count {
+                        break;
+                    }
+                    let r = f(i);
+                    out.lock().unwrap()[i] = Some(r);
                 }
-                let r = f(i);
-                out.lock().unwrap()[i] = Some(r);
+                flush_profile();
             });
         }
     });
@@ -569,6 +600,10 @@ fn add_mirror(a: &mut [Vec<C>; 3], v: &[Vec<C>; 3], len: usize, l: i64, nm: usiz
 }
 
 pub fn run(p: &Params, m: Mod) -> Raw {
+    // Each prime reports its own diagnostics, including single-thread runs.
+    for c in &PROF { c.store(0, Ordering::Relaxed); }
+    BOUND_CALLS.store(0, Ordering::Relaxed);
+    STATE_STEPS.store(0, Ordering::Relaxed);
     let n = p.n;
     let nm = p.moments;
     let nshards = p.shards;
@@ -616,7 +651,7 @@ pub fn run(p: &Params, m: Mod) -> Raw {
             for jj in 0..done {
                 let mut t = std::mem::replace(&mut pend[jj], Table::new(nm, 0));
                 t.finish();
-                STATE_STEPS.fetch_add(t.len() as u64, Ordering::Relaxed);
+                if p.profile { STATE_STEPS.fetch_add(t.len() as u64, Ordering::Relaxed); }
                 for i in 0..t.len() {
                     step_parked(&t, i, &mut pend, jj, s, p, m, done);
                 }
@@ -633,12 +668,12 @@ pub fn run(p: &Params, m: Mod) -> Raw {
             let bj: u128 = 1 << j;
             let bj1: u128 = 1 << (j + 1);
             let mask = !(bj | bj1);
-            STATE_STEPS.fetch_add(layer_len(&layer) as u64, Ordering::Relaxed);
+            if p.profile { STATE_STEPS.fetch_add(layer_len(&layer) as u64, Ordering::Relaxed); }
             if threads <= 1 {
                 // streaming: free each source shard as soon as it is processed,
                 // so the peak is about max(old, new) instead of old + new
                 let est = layer_len(&layer) / nshards + 16;
-                let ts = Instant::now();
+                let ts = p.profile.then(Instant::now);
                 let mut new: Layer = (0..nshards).map(|_| Table::new(nm, est)).collect();
                 for si in 0..layer.len() {
                     let src = std::mem::replace(&mut layer[si], Table::new(nm, 0));
@@ -651,12 +686,12 @@ pub fn run(p: &Params, m: Mod) -> Raw {
                         peak_bytes = peak_bytes.max(layer_bytes(&layer) + layer_bytes(&new));
                     }
                 }
-                PROF[0].fetch_add(ts.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                let tf = Instant::now();
+                if let Some(ts) = ts { profile_add(0, ts.elapsed().as_nanos() as u64); }
+                let tf = p.profile.then(Instant::now);
                 for t in new.iter_mut() {
                     t.finish();
                 }
-                PROF[1].fetch_add(tf.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                if let Some(tf) = tf { profile_add(1, tf.elapsed().as_nanos() as u64); }
                 peak_states = peak_states.max(layer_len(&new));
                 layer = new;
                 j += 1;
@@ -764,22 +799,22 @@ pub fn run(p: &Params, m: Mod) -> Raw {
             );
         }
     }
+    flush_profile();
     if p.verbose {
         eprintln!(
-            "done: peak states {} peak MiB {:.1} heap peak MiB {:.1} {:.2}s  bound calls {}  state-steps {}",
+            "done: peak states {} peak MiB {:.1} heap peak MiB {:.1} {:.2}s",
             peak_states,
             peak_bytes as f64 / 1048576.0,
             heap_peak_mib(),
-            t0.elapsed().as_secs_f64(),
-            BOUND_CALLS.load(Ordering::Relaxed),
-            STATE_STEPS.load(Ordering::Relaxed)
+            t0.elapsed().as_secs_f64()
         );
     }
-    if p.verbose {
+    if p.profile {
         let g = |k: usize| PROF[k].load(Ordering::Relaxed);
         eprintln!(
-            "profile: step loops {:.2}s  finish {:.2}s  identity copies {}  in bound {:.2}s",
-            g(0) as f64 * 1e-9, g(1) as f64 * 1e-9, g(2), g(3) as f64 * 1e-9
+            "profile: step loops {:.2}s  finish {:.2}s  identity copies {}  in bound {:.2}s  bound calls {}  state-steps {}",
+            g(0) as f64 * 1e-9, g(1) as f64 * 1e-9, g(2), g(3) as f64 * 1e-9,
+            BOUND_CALLS.load(Ordering::Relaxed), STATE_STEPS.load(Ordering::Relaxed)
         );
     }
     if p.slack {
@@ -1021,7 +1056,7 @@ fn step_one(tab: &Table, i: usize, nt: &mut Table, j: usize, s: usize, p: &Param
     let base = key & !(bj | bj1);
     if !q && !a {
         // vertex absent and nothing pending: identity, same bound, unique target
-        PROF[2].fetch_add(1, Ordering::Relaxed);
+        if p.profile { profile_add(2, 1); }
         nt.push_copy(key, lo, hi, tab.block(i));
         return;
     }
@@ -1186,7 +1221,8 @@ fn main() {
     let slack = std::env::var("DP_SLACK").is_ok();
     let nosign = std::env::var("DP_NOSIGN").is_ok();
     let cheap_lo = std::env::var("DP_CHEAP_LO").is_ok();
-        let p = Params { n, model, tmax, moments, verbose, loose, mirror, threads, shards, slack, nosign, cheap_lo, block, park };
+    let profile = std::env::var("DP_PROFILE").is_ok();
+    let p = Params { n, model, tmax, moments, verbose, profile, loose, mirror, threads, shards, slack, nosign, cheap_lo, block, park };
     let primes = modp::primes(first_prime + nprimes);
     for &pr in &primes[first_prime..] {
         let m = Mod::new(pr);

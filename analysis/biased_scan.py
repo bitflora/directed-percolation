@@ -50,8 +50,8 @@ def main():
         s = allser[name]
         Tn = len(s)
         row = {"series": name, "quantity": TARGET[name], "xc": [], "exponent": [], "spread": []}
-        for xc in grid:
-            v = da.biased_ensemble(s, a.K, range(0, 11, 2), range(Tn - a.span, Tn + 1), xc)
+        ensembles = da.biased_ensembles(s, a.K, range(0, 11, 2), range(Tn - a.span, Tn + 1), grid)
+        for xc, v in zip(grid, ensembles):
             med = float(np.median(v)) if v else float("nan")
             spr = float((np.quantile(v, 0.84) - np.quantile(v, 0.16)) / 2) if v else float("nan")
             row["xc"].append(float(xc))

@@ -82,8 +82,8 @@ def main():
                     results.append(summ)
                     print(json.dumps(summ), flush=True)
                 else:
-                    for xc in a.xc:
-                        v = da.biased_ensemble(s, K, Ls, Ms, Fraction(xc))
+                    ensembles = da.biased_ensembles(s, K, Ls, Ms, map(Fraction, a.xc))
+                    for xc, v in zip(a.xc, ensembles):
                         if not v:
                             continue
                         med = float(np.median(v))

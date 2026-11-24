@@ -53,10 +53,14 @@ Diagnostic environment variables:
 - `DP_NOSIGN=1`: count graphs without signs.
 - `DP_CHEAP_LO=1`: the rejected cheap lower bound.
 - `DP_NO_TRIM=1`: do not return freed heap memory to the OS after each block.
+- `DP_PROFILE=1`: collect detailed step/bound counters and timings. Counters
+  are accumulated per worker and merged when it finishes; `-v` alone only
+  reports progress and memory, without per-state profiling overhead.
 
 `analysis/peakmem.ps1 <exe> <args>` runs the engine and reports its peak working set, sampled every 100 ms. The heap peak printed by `-v` excludes heap fragmentation; the working set includes it.
 
-With `-v`, a coarse profile is also printed: step-loop time, finish time, identity copies, and time in the bound.
+With `DP_PROFILE=1`, a profile is printed for each prime: step-loop time,
+finish time, identity copies, bound calls and time in the bound.
 
 ## Algorithm
 
@@ -102,6 +106,11 @@ Further checks used during development:
 Run the Rust regression tests with `cargo test`, and the analysis accuracy
 regressions from the repository root with
 `python -m unittest discover -s analysis -p 'test_*.py'` (requires numpy and python-flint).
+The Python suite builds default, u32, u16 and u32/wide engines and compares
+all returned coefficients to the exact fixtures across execution modes.
+It also checks biased-DA estimates, matched equations and direct-solve fallbacks.
+Critical-point grids share one ball-arithmetic solve per degree assignment;
+singular or insufficiently precise updates use the original direct solver.
 
 ## dpwall: the wall series
 
