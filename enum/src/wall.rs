@@ -269,31 +269,132 @@ fn first_table() -> Table<Key> {
     first
 }
 
+/// Checkpoint of a spilled run, written after every block whose output is on
+/// disk: the series so far, the next block, and the output generation's
+/// directory and shard counts. Text, one `key=value` per line.
+struct Ckpt {
+    next: usize,
+    dir: std::path::PathBuf,
+    bytes: u64,
+    nkeys: Vec<usize>,
+    ncoefs: Vec<usize>,
+    stats: [u64; 4], // peak states, peak layer bytes, peak shard bytes, disk I/O bytes
+    secs: f64,
+    ser: [Vec<C>; 6],
+}
+
+/// Everything that must match for a checkpoint to be resumed.
+fn ckpt_tag(p: &Params, prime: u64) -> String {
+    format!(
+        "dpwall n={} prime={} block={} shards={} key_bits={} coef_bits={}",
+        p.n,
+        prime,
+        p.block,
+        p.shards,
+        8 * std::mem::size_of::<Key>(),
+        8 * std::mem::size_of::<C>()
+    )
+}
+
+fn ckpt_path(p: &Params, prime: u64) -> std::path::PathBuf {
+    p.spill.as_deref().unwrap().join(format!("dpwall-n{}-p{}.ckpt", p.n, prime))
+}
+
+fn join<T: ToString>(v: &[T]) -> String {
+    v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
+}
+
+fn ckpt_write(p: &Params, prime: u64, c: &Ckpt) {
+    let mut t = format!("{}\nnext={}\ndir={}\nbytes={}\n", ckpt_tag(p, prime), c.next, c.dir.display(), c.bytes);
+    t += &format!("nkeys={}\nncoefs={}\nstats={}\nsecs={}\n", join(&c.nkeys), join(&c.ncoefs), join(&c.stats), c.secs);
+    for (k, v) in c.ser.iter().enumerate() {
+        t += &format!("ser{}={}\n", k, join(v));
+    }
+    let path = ckpt_path(p, prime);
+    let tmp = path.with_extension("tmp");
+    {
+        let mut f = std::fs::File::create(&tmp).expect("write checkpoint");
+        f.write_all(t.as_bytes()).expect("write checkpoint");
+        f.sync_all().expect("write checkpoint");
+    }
+    std::fs::rename(&tmp, &path).expect("replace checkpoint"); // atomic on one volume
+}
+
+fn ckpt_read(p: &Params, prime: u64) -> Option<Ckpt> {
+    let path = ckpt_path(p, prime);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let mut lines = text.lines();
+    let tag = lines.next()?;
+    assert_eq!(tag, ckpt_tag(p, prime), "checkpoint {path:?} is from a different run: delete it to start over");
+    let kv: std::collections::HashMap<&str, &str> = lines.filter_map(|l| l.split_once('=')).collect();
+    let nums = |k: &str| -> Vec<u64> {
+        let v = kv[k];
+        if v.is_empty() {
+            Vec::new()
+        } else {
+            v.split(',').map(|x| x.parse().unwrap()).collect()
+        }
+    };
+    let us = |k: &str| nums(k).into_iter().map(|x| x as usize).collect::<Vec<_>>();
+    let st = nums("stats");
+    Some(Ckpt {
+        next: kv["next"].parse().unwrap(),
+        dir: kv["dir"].into(),
+        bytes: kv["bytes"].parse().unwrap(),
+        nkeys: us("nkeys"),
+        ncoefs: us("ncoefs"),
+        stats: [st[0], st[1], st[2], st[3]],
+        secs: kv["secs"].parse().unwrap(),
+        ser: std::array::from_fn(|k| nums(&format!("ser{k}")).into_iter().map(|x| x as C).collect()),
+    })
+}
+
 /// As `run`, but each block reads its input one shard at a time and splits
-/// its output straight into the next generation, which goes to disk when
-/// the current one exceeds `spill_above`. Memory holds only the shards in
-/// flight (about threads x 2 x layer / shards) plus the write buffers.
-fn run_spill(p: &Params, m: Mod) -> [Vec<C>; 6] {
+/// its output straight into the next generation, which goes to disk once a
+/// generation exceeds `spill_above` (and stays on disk from then on, so every
+/// later block is checkpointed). Memory holds only the shards in flight
+/// (about threads x 2 x layer / shards) plus the write buffers.
+///
+/// Pausing: after each block with output on disk a checkpoint is written, and
+/// only then is the input generation deleted. A file `PAUSE` in the spill
+/// directory stops the run at the next block boundary (exit code 3); a kill or
+/// crash loses at most the block in progress. Rerunning the same command
+/// resumes.
+fn run_spill(p: &Params, m: Mod, prime: u64) -> [Vec<C>; 6] {
     let n = p.n;
     let dir = p.spill.as_deref().unwrap();
-    let mut ser: [Vec<C>; 6] = std::array::from_fn(|_| vec![0 as C; n + 1]);
-    ser[1][0] = 1; // S: the origin
     let bl = blocks(n, p.block);
     let ns = p.shards;
     let t0 = Instant::now();
-    let mut gen: spill::Gen<Key> = spill::Gen::new(None, 0, ns);
-    let (t, j, jend) = bl[0];
-    let tc = touched(t, j, jend);
-    spill::write_split(&first_table(), |k| k & !tc, &gen);
-    let (mut peak_states, mut peak_gen, mut peak_shard, mut io) = (0usize, 0u64, 0usize, 0u64);
-    for (bi, &(t, j, jend)) in bl.iter().enumerate() {
+    let gen_dir = |bi: usize| dir.join(format!("dpwall-n{}-p{}-g{}", n, prime, bi));
+    let (mut ser, mut gen, start, stats, secs0) = match ckpt_read(p, prime) {
+        Some(c) => {
+            let gen = spill::Gen::<Key>::reopen(c.dir.clone(), c.next, &c.nkeys, &c.ncoefs, c.bytes);
+            eprintln!("resuming prime {} at block {} of {} ({:.1}s done)", prime, c.next, bl.len(), c.secs);
+            (c.ser, gen, c.next, c.stats, c.secs)
+        }
+        None => {
+            let mut ser: [Vec<C>; 6] = std::array::from_fn(|_| vec![0 as C; n + 1]);
+            ser[1][0] = 1; // S: the origin
+            let gen: spill::Gen<Key> = spill::Gen::new(None, 0, ns);
+            let (t, j, jend) = bl[0];
+            let tc = touched(t, j, jend);
+            spill::write_split(&first_table(), |k| k & !tc, &gen);
+            (ser, gen, 0, [0u64; 4], 0.0)
+        }
+    };
+    let [mut peak_states, mut peak_gen, mut peak_shard, mut io] = stats;
+    let mut on_disk = gen.on_disk;
+    for bi in start..bl.len() {
+        let (t, j, jend) = bl[bi];
         let e = if t % 2 == 0 { 1 } else { 0 };
         let row_end = jend == t / 2 + 1;
         let next = bl.get(bi + 1).map(|&(t2, j2, je2)| touched(t2, j2, je2));
-        let to_disk = gen.bytes() > p.spill_above;
-        let out: spill::Gen<Key> = spill::Gen::new(if to_disk { Some(dir) } else { None }, bi + 1, ns);
+        on_disk |= gen.bytes() > p.spill_above;
+        let out: spill::Gen<Key> =
+            if on_disk && next.is_some() { spill::Gen::at(gen_dir(bi + 1), bi + 1, ns) } else { spill::Gen::new(None, bi + 1, ns) };
         let res: Vec<(usize, usize, Option<[Vec<C>; 6]>)> = par_map(ns, p.threads, |d| {
-            let Some(src) = gen.take(d) else {
+            let Some(src) = gen.take(d, 1) else {
                 return (0, 0, None);
             };
             let mut cur = step(std::slice::from_ref(&src), t, j, p, m);
@@ -321,13 +422,14 @@ fn run_spill(p: &Params, m: Mod) -> [Vec<C>; 6] {
         let mut states = 0;
         for (st, mem, acc) in res {
             states += st;
-            peak_shard = peak_shard.max(mem);
+            peak_shard = peak_shard.max(mem as u64);
             if let Some(a) = acc {
                 add_series(&mut ser, &a, m);
             }
         }
-        peak_states = peak_states.max(states);
+        peak_states = peak_states.max(states as u64);
         peak_gen = peak_gen.max(out.bytes());
+        let secs = secs0 + t0.elapsed().as_secs_f64();
         if p.verbose && row_end {
             eprintln!(
                 "row {:3} states {:10} layer MiB {:8.1} {} peak states {:10} peak layer MiB {:8.1} peak shard MiB {:6.1} disk I/O GiB {:7.2} {:8.1}s",
@@ -339,11 +441,35 @@ fn run_spill(p: &Params, m: Mod) -> [Vec<C>; 6] {
                 peak_gen as f64 / 1048576.0,
                 peak_shard as f64 / 1048576.0,
                 io as f64 / 1073741824.0,
-                t0.elapsed().as_secs_f64()
+                secs
             );
         }
-        gen = out; // the spent generation's files were deleted as its shards were read
+        let saved = out.on_disk;
+        if saved {
+            let (nkeys, ncoefs) = out.counts();
+            let c = Ckpt {
+                next: bi + 1,
+                dir: out.directory().unwrap().to_path_buf(),
+                bytes: out.bytes(),
+                nkeys,
+                ncoefs,
+                stats: [peak_states, peak_gen, peak_shard, io],
+                secs,
+                ser: ser.clone(),
+            };
+            ckpt_write(p, prime, &c);
+        }
+        gen = out; // drops the spent generation and deletes its files
+        if bi + 1 < bl.len() && dir.join("PAUSE").exists() {
+            if saved {
+                eprintln!("paused before block {} of {} (row {}), {:.1}s: rerun the same command to resume", bi + 1, bl.len(), t + 1, secs);
+            } else {
+                eprintln!("paused before the layer reached disk: nothing saved, a rerun starts this prime over");
+            }
+            std::process::exit(3); // skips Drop, so the checkpointed generation stays
+        }
     }
+    let _ = std::fs::remove_file(ckpt_path(p, prime));
     if p.verbose {
         eprintln!(
             "done: peak states {} peak layer MiB {:.1} peak shard MiB {:.1} disk I/O GiB {:.2} {:.2}s",
@@ -351,15 +477,15 @@ fn run_spill(p: &Params, m: Mod) -> [Vec<C>; 6] {
             peak_gen as f64 / 1048576.0,
             peak_shard as f64 / 1048576.0,
             io as f64 / 1073741824.0,
-            t0.elapsed().as_secs_f64()
+            secs0 + t0.elapsed().as_secs_f64()
         );
     }
     ser
 }
 
-fn run(p: &Params, m: Mod) -> [Vec<C>; 6] {
+fn run(p: &Params, m: Mod, prime: u64) -> [Vec<C>; 6] {
     if p.spill.is_some() {
-        return run_spill(p, m);
+        return run_spill(p, m, prime);
     }
     let n = p.n;
     let mut ser: [Vec<C>; 6] = std::array::from_fn(|_| vec![0 as C; n + 1]);
@@ -487,13 +613,23 @@ fn main() {
     let shards = shards.unwrap_or(if spill.is_some() { 64 } else if threads <= 1 { 1 } else { threads * 8 });
     if let Some(d) = &spill {
         std::fs::create_dir_all(d).expect("create spill directory");
+        // starting the program is the request to run: clear an old pause
+        if std::fs::remove_file(d.join("PAUSE")).is_ok() {
+            eprintln!("removed {:?}", d.join("PAUSE"));
+        }
     }
     let p = Params { n, threads, shards, block, verbose, spill, spill_above: spill_above_mib << 20 };
     let primes = modp::primes(first_prime + nprimes);
+    // primes already in the output file are done (so a rerun resumes a queue)
+    let done = out.as_ref().and_then(|o| std::fs::read_to_string(o).ok()).unwrap_or_default();
     for &pr in &primes[first_prime..] {
+        if done.lines().any(|l| l.contains(&format!("\"n\":{},\"prime\":{},", n, pr))) {
+            eprintln!("prime {} already in the output: skipped", pr);
+            continue;
+        }
         let m = Mod::new(pr);
         let t0 = Instant::now();
-        let ser = run(&p, m);
+        let ser = run(&p, m, pr);
         let mut line = format!("{{\"model\":\"bond_wall\",\"n\":{},\"prime\":{},\"seconds\":{:.3}", n, pr, t0.elapsed().as_secs_f64());
         for (k, name) in NAMES.iter().enumerate() {
             let v: Vec<String> = ser[k].iter().map(|x| x.to_string()).collect();

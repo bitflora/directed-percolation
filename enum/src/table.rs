@@ -106,6 +106,24 @@ impl<K: Key> Table<K> {
     pub fn from_seq_parts(nm: usize, keys: Vec<K>, lo: Vec<u8>, hi: Vec<u8>, arena: Vec<C>) -> Self {
         Table { nm, keys, lo, hi, off: Vec::new(), arena, slots: Vec::new(), mask: 0, hashed: 0, is_hashed: Vec::new(), seq: true }
     }
+    /// Rebuild the per-state offsets of a sequential table, so its blocks can
+    /// be read by index again (dpenum reading a spilled shard).
+    #[allow(dead_code)]
+    pub fn into_indexed(mut self) -> Self {
+        if self.seq {
+            let mut o = 0usize;
+            self.off = Vec::with_capacity(self.keys.len());
+            for i in 0..self.keys.len() {
+                assert!(o <= u32::MAX as usize, "shard arena exceeds 2^32 coefficients: use more shards");
+                self.off.push(o as u32);
+                o += (self.hi[i] - self.lo[i] + 1) as usize * self.nm;
+            }
+            assert_eq!(o, self.arena.len(), "sequential table: block sizes do not match the arena");
+            self.is_hashed = vec![false; self.keys.len()];
+            self.seq = false;
+        }
+        self
+    }
     #[allow(dead_code)] // used by dpwall only
     pub fn drop_offsets(&mut self) {
         assert!(self.slots.is_empty(), "call after finish");

@@ -28,6 +28,8 @@ Options:
 | `--threads T` | T = 1 uses streaming steps that free each source shard once it is processed. T > 1 (default 4) runs sharded parallel blocks. Under heavy CPU contention T = 1 is faster. |
 | `--park` | Single-thread mode only. Each state waits in the table of the next column that changes it, so untouched states are never copied. Half the column steps and about 11% faster, but about 46% more peak memory (n = 120). Use it when time, not memory, binds. |
 | `--block K` | Parallel mode only: steps per synchronization (default 8). A block of K column steps touches only K + 1 key bits, so states are sharded by the other bits and each thread runs the block independently. |
+| `--spill DIR` | Out of core, as `dpwall --spill` (see the dpwall section below). Every phase (a block of steps, or a row end) reads its input one shard at a time and splits its output by the next phase's grouping into the next generation. Once a generation exceeds `--spill-above MiB` (default 256), later generations go to disk in DIR. The next row's first block is grouped by the widest possible first block, which is exact because a coarser grouping is still exact. Pause with a file `DIR/PAUSE`; resume by rerunning the command. A checkpoint after every disk phase means a kill loses at most one phase, and primes already in the output are skipped. `--shards` defaults to 64 here. Not with `--park`. |
+| `--shards S` | Number of shards (default threads × 8, or 64 for one thread or with `--spill`) |
 | (parallel memory) | Since v14, each parallel block first moves the old layer into per-target pieces, freeing every source shard once split and every piece once stepped. The old and new layers are therefore never both held in full: at n = 150, all moments, u16, 6 threads, the peak working set fell from 694 to 491 MiB, with identical output. Freed heap memory is returned to Windows after every block (`DP_NO_TRIM=1` disables this). |
 | `--no-x` | Store only M₀; outputs S, μ₀₁ and μ₀₂, using a third of the memory |
 | `--no-mirror` | Disable the mirror reduction (testing) |
@@ -140,10 +142,16 @@ At order 100 (8.0 M states): v1 u64 about 616 MiB, v2 u64 525 MiB, v2 u32 298 Mi
 
 **Why not swap.** Each block reads the whole layer once and writes a new one, a cyclic scan. Under paging that is the worst case: the least recently used page is the next one needed, faults are small and synchronous, and Windows wastes time compressing incompressible residues.
 
-**Spilling to disk (`--spill DIR`).** Each block reads its input one target shard at a time, runs its steps, and splits the output by the next block's shard grouping straight into the next generation ([src/spill.rs](src/spill.rs)). A generation larger than `--spill-above` MiB (default 256) is written to disk as one file per shard, appended in chunks; reading a shard deletes its file. Smaller generations stay in memory through the same code path, so the early rows create no files. Each spilled block is one sequential read and one sequential write of the layer.
-- Each disk generation reserves a private subdirectory atomically, so independent runs can safely share the spill root. Its subdirectory is removed when the generation is released.
+**Spilling to disk (`--spill DIR`).** Each block reads its input one target shard at a time, runs its steps, and splits the output by the next block's shard grouping straight into the next generation ([src/spill.rs](src/spill.rs)). Once a generation exceeds `--spill-above` MiB (default 256), every later generation is written to disk as one file per shard, appended in chunks. Smaller early generations stay in memory through the same code path, so the early rows create no files. Each spilled block is one sequential read and one sequential write of the layer.
+- **Pause and resume.** After every block whose output is on disk, a checkpoint is written: `dpwall-n<N>-p<prime>.ckpt` in the spill directory, holding the series so far, the next block, and the generation's shard counts. Only then is the input generation deleted.
+  - To pause, create a file `PAUSE` in the spill directory. The run stops at the next block boundary with exit code 3.
+  - A kill, crash or reboot loses at most the block in progress.
+  - To resume, rerun the same command. Primes already in the output file are skipped, the current prime continues from its checkpoint, and an old `PAUSE` file is removed at start.
+  - Resumed output is identical: tested with a pause and with a hard kill at order 80.
+- Generation directories are named by order, prime and block (`dpwall-n<N>-p<prime>-g<block>`). Runs with different orders or primes can share a spill root; two runs of the same order and prime must not.
 - Memory holds only the shards in flight, about threads × 2 × layer ÷ shards. `--shards` defaults to 64 in spill mode; raise it for large layers. Every shard costs one file create and delete per block, so very many shards make small layers slow.
-- Disk needs about two layers' worth of space.
+- Disk needs about two layers' worth of space: the input generation is kept until its block is checkpointed.
+- The bulk engine has the same mode: `dpenum --spill DIR` (see Build and run).
 - Beyond n = 121 the keys no longer fit in u64: build with `--features wide` (u128 keys, 8 more bytes per state). Features combine, for example `--features u32,wide`.
 - Order 100, u32, 4 threads, one prime, on a busy machine: in memory, peak working set 600 MiB and 695 s; spilled above 32 MiB, peak working set 155 MiB, 761 s (+9.5%) and 32 GiB of disk traffic. The outputs are identical. All-disk and `wide` runs reproduce wall110 exactly at order 80.
 

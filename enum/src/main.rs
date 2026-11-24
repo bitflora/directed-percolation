@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 mod modp;
+mod spill;
 mod table;
 
 use modp::{Mod, C};
@@ -58,6 +59,8 @@ pub struct Params {
     pub cheap_lo: bool, // experiment: lower end 2s + fixed for hashed targets, rely on trimming
     pub block: usize,   // parallel mode: kink steps per synchronization
     pub park: bool,     // single-thread mode: parked pass (--park): ~11% faster, ~46% more memory
+    pub spill: Option<std::path::PathBuf>, // --spill DIR: out-of-core sweep (`run_spill`)
+    pub spill_above: u64, // bytes: generations larger than this go to disk
 }
 
 /// Heap accounting (current and peak bytes), so reported peaks are measured
@@ -212,7 +215,8 @@ mod tests {
     fn params(n: usize, model: Model) -> Params {
         let tmax = if model == Model::Bond { n / 2 } else { (n + 1) / 2 };
         Params { n, model, tmax, moments: 3, verbose: false, profile: false, loose: false, mirror: true,
-                 threads: 1, shards: 1, slack: false, nosign: false, cheap_lo: false, block: 8, park: true }
+                 threads: 1, shards: 1, slack: false, nosign: false, cheap_lo: false, block: 8, park: true,
+                 spill: None, spill_above: 0 }
     }
 
     #[test]
@@ -829,6 +833,276 @@ pub fn run(p: &Params, m: Mod) -> Raw {
     Raw { sn, xn }
 }
 
+/// One phase of the spilled sweep over row s: a block of column steps j..jend,
+/// or the row end.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Phase {
+    Block(usize, usize),
+    RowEnd,
+}
+
+/// Phases of row s whose layer has maximum width wmax (as `run`).
+fn row_phases(wmax: usize, block: usize) -> Vec<Phase> {
+    let mut v = Vec::new();
+    let mut j = 0;
+    while j <= wmax + 1 {
+        let jend = (j + block).min(wmax + 2);
+        v.push(Phase::Block(j, jend));
+        j = jend;
+    }
+    v.push(Phase::RowEnd);
+    v
+}
+
+fn touched_bits(j: usize, jend: usize) -> u128 {
+    (if jend >= 127 { !0u128 } else { (2u128 << jend) - 1 }) & !((1u128 << j) - 1)
+}
+
+/// Shard grouping for the input of a phase: states in one group interact only
+/// with each other. Before row s + 1's width is known, its first block is
+/// grouped by the bits of the widest possible first block, 0..=block: a
+/// coarser grouping, so still exact.
+fn phase_group(ph: Phase, mirror: bool) -> impl Fn(u128) -> u128 {
+    move |k: u128| match ph {
+        Phase::Block(j, jend) => k & !touched_bits(j, jend),
+        Phase::RowEnd => {
+            let sh = k >> k.trailing_zeros();
+            if mirror {
+                canonical(sh).0
+            } else {
+                sh
+            }
+        }
+    }
+}
+
+fn enum_ckpt_tag(p: &Params, prime: u64) -> String {
+    format!(
+        "dpenum model={:?} n={} prime={} moments={} mirror={} loose={} block={} shards={} coef_bits={}",
+        p.model,
+        p.n,
+        prime,
+        p.moments,
+        p.mirror,
+        p.loose,
+        p.block,
+        p.shards,
+        8 * std::mem::size_of::<C>()
+    )
+}
+
+fn enum_ckpt_path(p: &Params, prime: u64) -> std::path::PathBuf {
+    p.spill.as_deref().unwrap().join(format!("dpenum-{:?}-n{}-p{}.ckpt", p.model, p.n, prime))
+}
+
+/// As `run` in parallel mode, but out of core: each phase (a block of steps,
+/// or a row end) reads its input one target shard at a time and splits its
+/// output by the next phase's grouping straight into the next generation,
+/// which goes to disk once a generation exceeds `spill_above` and stays there
+/// (see src/spill.rs). Memory holds only the shards in flight.
+///
+/// Pausing, as in dpwall: after every phase whose output is on disk a
+/// checkpoint is written before the input generation is deleted. A file
+/// `PAUSE` in the spill directory stops the run at the next phase boundary
+/// (exit code 3); a kill or crash loses at most the phase in progress.
+/// Rerunning the same command resumes.
+pub fn run_spill(p: &Params, m: Mod, prime: u64) -> Raw {
+    let n = p.n;
+    let nm = p.moments;
+    let ns = p.shards;
+    let dir = p.spill.as_deref().unwrap();
+    let inv2 = (m.p + 1) / 2;
+    let t0 = Instant::now();
+    let tag = enum_ckpt_tag(p, prime);
+    let ckpt = enum_ckpt_path(p, prime);
+    let gen_dir = |s: usize, pi: usize| dir.join(format!("dpenum-{:?}-n{}-p{}-r{}-{}", p.model, n, prime, s, pi));
+    let mut sn = vec![vec![0 as C; n + 1]; p.tmax + 1];
+    let mut xn = vec![vec![0 as C; n + 1]; p.tmax + 1];
+    let mut stats = [0u64; 4]; // peak states, peak layer bytes, peak shard bytes, disk I/O bytes
+    let (mut gen, s0, mut pi0, mut wmax, secs0) = match spill::load_text(&ckpt, &tag) {
+        Some(kv) => {
+            let num = |k: &str| -> u64 { kv[k].parse().unwrap() };
+            let us = |k: &str| spill::split_nums(&kv[k]).into_iter().map(|x| x as usize).collect::<Vec<_>>();
+            let (s, pi) = (num("row") as usize, num("phase") as usize);
+            let d: std::path::PathBuf = kv["dir"].clone().into();
+            let gen = spill::Gen::<u128>::reopen(d, pi, &us("nkeys"), &us("ncoefs"), num("bytes"));
+            for t in 0..=p.tmax {
+                for (k, v) in spill::split_nums(&kv[&format!("sn{t}")]).into_iter().enumerate() {
+                    sn[t][k] = v as C;
+                }
+                for (k, v) in spill::split_nums(&kv[&format!("xn{t}")]).into_iter().enumerate() {
+                    xn[t][k] = v as C;
+                }
+            }
+            let st = spill::split_nums(&kv["stats"]);
+            stats.copy_from_slice(&st);
+            let secs: f64 = kv["secs"].parse().unwrap();
+            eprintln!("resuming prime {} at row {} phase {} ({:.1}s done)", prime, s, pi, secs);
+            (gen, s, pi, num("wmax") as usize, secs)
+        }
+        None => {
+            // row 0: the origin, mirror-symmetric, stored with weight 1/2
+            let mut first = Table::new(nm, 16);
+            let key: u128 = 0b10;
+            let (lo, hi) = bound(key, 0, 0, p).expect("origin must survive");
+            let idx = first.push_unique(key, lo, hi);
+            first.coef_mut(idx, 0)[0] = if p.mirror { inv2 } else { 1 };
+            first.finish();
+            let wmax = first.max_width();
+            let gen = spill::Gen::<u128>::new(None, 0, ns);
+            spill::write_split(&first, phase_group(row_phases(wmax, p.block)[0], p.mirror), &gen);
+            (gen, 0, 0, wmax, 0.0)
+        }
+    };
+    let [mut peak_states, mut peak_gen, mut peak_shard, mut io] = stats;
+    let mut on_disk = gen.on_disk;
+    HEAP_PEAK.store(HEAP_CUR.load(Ordering::Relaxed), Ordering::Relaxed);
+    for s in s0..p.tmax {
+        let phases = row_phases(wmax, p.block);
+        let mut next_wmax = 0usize;
+        for pi in pi0..phases.len() {
+            let ph = phases[pi];
+            let last_phase = s + 1 == p.tmax && ph == Phase::RowEnd;
+            let next = if ph == Phase::RowEnd {
+                // the first block of row s + 1, before its width is known
+                Phase::Block(0, p.block)
+            } else {
+                phases[pi + 1]
+            };
+            let group = phase_group(next, p.mirror);
+            on_disk |= gen.bytes() > p.spill_above;
+            let (ns_next, pi_next) = if ph == Phase::RowEnd { (s + 1, 0) } else { (s, pi + 1) };
+            let out: spill::Gen<u128> = if on_disk && !last_phase {
+                spill::Gen::at(gen_dir(ns_next, pi_next), pi_next, ns)
+            } else {
+                spill::Gen::new(None, pi_next, ns)
+            };
+            let t = s + 1;
+            let res: Vec<(usize, usize, usize, Option<Scratch>)> = par_map(ns, p.threads, |d| {
+                let Some(src) = gen.take(d, nm) else {
+                    return (0, 0, 0, None);
+                };
+                let src = src.into_indexed();
+                let (cnt, nc) = (src.len(), src.coefs());
+                let (cur, sc, mem) = match ph {
+                    Phase::Block(j, jend) => {
+                        let mut cur = Table::new(nm, cnt + cnt / 2 + 16);
+                        cur.reserve_coefs(nc + nc / 8);
+                        for i in 0..src.len() {
+                            step_one(&src, i, &mut cur, j, s, p, m);
+                        }
+                        cur.finish();
+                        let mem = src.bytes() + cur.bytes();
+                        drop(src);
+                        for jj in (j + 1)..jend {
+                            let mut nt = Table::new(nm, cur.len() + cur.len() / 2 + 16);
+                            nt.reserve_coefs(cur.coefs() + cur.coefs() / 8);
+                            for i in 0..cur.len() {
+                                step_one(&cur, i, &mut nt, jj, s, p, m);
+                            }
+                            nt.finish();
+                            cur = nt;
+                        }
+                        (cur, None, mem)
+                    }
+                    Phase::RowEnd => {
+                        let mut nt = Table::new(nm, cnt + 16);
+                        nt.reserve_coefs(nc + nc / 8);
+                        let mut sc = Scratch::new(n);
+                        for i in 0..src.len() {
+                            row_end_one(&src, i, &mut nt, &mut sc, t, p, m);
+                        }
+                        nt.finish();
+                        let mem = src.bytes() + nt.bytes();
+                        (nt, Some(sc), mem)
+                    }
+                };
+                if !last_phase {
+                    spill::write_split(&cur, &group, &out);
+                }
+                (cur.len(), mem.max(cur.bytes()), cur.max_width(), sc)
+            });
+            out.close();
+            if gen.on_disk {
+                io += gen.bytes();
+            }
+            if out.on_disk {
+                io += out.bytes();
+            }
+            let mut states = 0u64;
+            for (st, mem, w, sc) in res {
+                states += st as u64;
+                peak_shard = peak_shard.max(mem as u64);
+                if ph == Phase::RowEnd {
+                    next_wmax = next_wmax.max(w); // the width of row s + 1
+                }
+                if let Some(sc) = sc {
+                    for d in 0..=n {
+                        sn[t][d] = m.add(sn[t][d], sc.sn[d]);
+                        xn[t][d] = m.add(xn[t][d], sc.xn[d]);
+                    }
+                }
+            }
+            peak_states = peak_states.max(states);
+            peak_gen = peak_gen.max(out.bytes());
+            let secs = secs0 + t0.elapsed().as_secs_f64();
+            if p.verbose && ph == Phase::RowEnd {
+                eprintln!(
+                    "row {:3} -> states {:>11} layer MiB {:8.1} {} peak states {:>11} peak layer MiB {:8.1} peak shard MiB {:6.1} heap peak MiB {:8.1} disk I/O GiB {:7.2} {:9.1}s",
+                    t,
+                    states,
+                    out.bytes() as f64 / 1048576.0,
+                    if out.on_disk { "disk" } else { "mem " },
+                    peak_states,
+                    peak_gen as f64 / 1048576.0,
+                    peak_shard as f64 / 1048576.0,
+                    heap_peak_mib(),
+                    io as f64 / 1073741824.0,
+                    secs
+                );
+            }
+            let saved = out.on_disk;
+            if saved {
+                let (nkeys, ncoefs) = out.counts();
+                let w = if ph == Phase::RowEnd { next_wmax } else { wmax };
+                let mut text = format!("{tag}\nrow={ns_next}\nphase={pi_next}\nwmax={w}\n");
+                text += &format!("dir={}\nbytes={}\n", out.directory().unwrap().display(), out.bytes());
+                text += &format!("nkeys={}\nncoefs={}\n", spill::join(&nkeys), spill::join(&ncoefs));
+                text += &format!("stats={}\nsecs={}\n", spill::join(&[peak_states, peak_gen, peak_shard, io]), secs);
+                for tt in 0..=p.tmax {
+                    text += &format!("sn{tt}={}\nxn{tt}={}\n", spill::join(&sn[tt]), spill::join(&xn[tt]));
+                }
+                spill::save_text(&ckpt, &text);
+            }
+            gen = out; // drops the spent generation and deletes its files
+            trim_heap();
+            if !last_phase && dir.join("PAUSE").exists() {
+                if saved {
+                    eprintln!("paused at row {} phase {}, {:.1}s: rerun the same command to resume", ns_next, pi_next, secs);
+                } else {
+                    eprintln!("paused before the layer reached disk: nothing saved, a rerun starts this prime over");
+                }
+                std::process::exit(3); // skips Drop, so the checkpointed generation stays
+            }
+        }
+        wmax = next_wmax;
+        pi0 = 0;
+    }
+    let _ = std::fs::remove_file(&ckpt);
+    if p.verbose {
+        eprintln!(
+            "done: peak states {} peak layer MiB {:.1} peak shard MiB {:.1} heap peak MiB {:.1} disk I/O GiB {:.2} {:.2}s",
+            peak_states,
+            peak_gen as f64 / 1048576.0,
+            peak_shard as f64 / 1048576.0,
+            heap_peak_mib(),
+            io as f64 / 1073741824.0,
+            secs0 + t0.elapsed().as_secs_f64()
+        );
+    }
+    Raw { sn, xn }
+}
+
 /// Per-thread scratch space and harvested non-nodal sums for one row end.
 pub struct Scratch {
     sn: Vec<C>,
@@ -1173,6 +1447,9 @@ fn main() {
     let mut threads = 4usize;
     let mut block = 8usize;
     let mut park = false;
+    let mut shards: Option<usize> = None;
+    let mut spill: Option<std::path::PathBuf> = None;
+    let mut spill_above_mib = 256u64;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -1202,6 +1479,18 @@ fn main() {
                 block = args[i + 1].parse().unwrap();
                 i += 1;
             }
+            "--shards" => {
+                shards = Some(args[i + 1].parse().unwrap());
+                i += 1;
+            }
+            "--spill" => {
+                spill = Some(args[i + 1].clone().into());
+                i += 1;
+            }
+            "--spill-above" => {
+                spill_above_mib = args[i + 1].parse().unwrap();
+                i += 1;
+            }
             "-o" => {
                 out = Some(args[i + 1].clone());
                 i += 1;
@@ -1217,17 +1506,34 @@ fn main() {
         Model::Site => (n + 1) / 2,
     }
     .max(1);
-    let shards = if threads <= 1 { 64 } else { threads * 8 };
+    let shards = shards.unwrap_or(if spill.is_some() || threads <= 1 { 64 } else { threads * 8 });
+    if let Some(d) = &spill {
+        assert!(!park, "--park does not combine with --spill");
+        std::fs::create_dir_all(d).expect("create spill directory");
+        // starting the program is the request to run: clear an old pause
+        if std::fs::remove_file(d.join("PAUSE")).is_ok() {
+            eprintln!("removed {:?}", d.join("PAUSE"));
+        }
+    }
     let slack = std::env::var("DP_SLACK").is_ok();
     let nosign = std::env::var("DP_NOSIGN").is_ok();
     let cheap_lo = std::env::var("DP_CHEAP_LO").is_ok();
     let profile = std::env::var("DP_PROFILE").is_ok();
-    let p = Params { n, model, tmax, moments, verbose, profile, loose, mirror, threads, shards, slack, nosign, cheap_lo, block, park };
+    let p = Params { n, model, tmax, moments, verbose, profile, loose, mirror, threads, shards, slack, nosign, cheap_lo, block, park, spill, spill_above: spill_above_mib << 20 };
     let primes = modp::primes(first_prime + nprimes);
+    // spill mode: primes already in the output file are done, so rerunning
+    // the same command resumes a queue
+    let done = if p.spill.is_some() { out.as_ref().and_then(|o| std::fs::read_to_string(o).ok()).unwrap_or_default() } else { String::new() };
+    let mname = if model == Model::Bond { "bond" } else { "site" };
     for &pr in &primes[first_prime..] {
+        let tagline = format!("\"model\":\"{}\",\"n\":{},\"prime\":{},\"moments\":{},", mname, n, pr, moments);
+        if done.lines().any(|l| l.contains(&tagline)) {
+            eprintln!("prime {} already in the output: skipped", pr);
+            continue;
+        }
         let m = Mod::new(pr);
         let t0 = Instant::now();
-        let raw = run(&p, m);
+        let raw = if p.spill.is_some() { run_spill(&p, m, pr) } else { run(&p, m) };
         let series = assemble(&raw, &p, m);
         let names = ["S", "mu01", "mu02", "mu20"];
         let mut line = format!(
