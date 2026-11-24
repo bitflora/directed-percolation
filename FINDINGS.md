@@ -19,7 +19,7 @@ Running record of results for the directed percolation study. Each claim lists i
 - **Gate (M2) passed.** Estimates of ν∥ and ν⊥ improve about 1.6–2× per 10 extra terms (fits over 90–171 terms), so 200–230 terms should give about one more significant digit (F5, F10, F11).
 - **Solvability.** There is no small linear ODE for any of the series (F6). On rings, the poles of the mean cluster size pinch toward p_c and cluster around the bulk non-physical singularities: a first look at the haruspicy route (F9).
 - **Second night (November 22–23).** μ₂₀ at 171 terms completes Jensen's set; every unbiased estimate, including 2ν⊥ = 2.1937077 and γ + 2ν⊥ = 4.4714139, agrees with his. The μ₂₀μ₀₂/μ₀₁² critical point (0.6447001905) sits 5 × 10⁻⁹ above the S and μ₀₂/μ₀₁ ones, inside his error bar; this gap is the clearest target for longer series. A split-layer parallel step cut peak memory by about 30% (F12). The site series then reached 158 terms in 1 h 48 min; every site estimate agrees with Jensen's, and biased approximants give p_c(site) = 0.70548521, against his 0.70548522(4) (F13).
-- **Wall (M5, F14).** A new direct series for the mean cluster length next to a wall, to 110 terms (3 primes, 37 min each), confirms every entry of the 1996 wall table, including terms that rested on a conjectured closed form. Biased approximants give τ₁ = 1.00010(2), so the conjecture τ₁ = 1 is strongly disfavoured; Jensen's scaling-relation value 1.00014(2) is 1.4σ away.
+- **Wall (M5, F14).** A new direct series for the mean cluster length next to a wall, to 110 terms (3 primes, 37 min each), confirms every entry of the 1996 wall table, including terms that rested on a conjectured closed form. Extended to 120 terms after the memory work (five 31-bit primes, 3.8 GB, about 1 h per prime), biased approximants give τ₁ = 1.00012(3), up from 1.00010(2) at 110 terms (F15). The conjecture τ₁ = 1 is strongly disfavoured, and Jensen's scaling-relation value 1.00014(2) now agrees within 0.6σ.
 - **Compute decision (M4).** Measured: order 171 for S, μ₀₁ and μ₀₂ takes 12 min per prime with 6 threads and 2.2 GB on this laptop (F11), and parallel efficiency is about 60–75% (F7). Orders 200 and above need a large-memory machine; projections are in F7.
 
 ## F1. Independent ground truth for small orders (M0)
@@ -472,7 +472,7 @@ The drift fits give error factors of 1.4× (ν∥) and 1.6× (2ν⊥) per 10 ter
 - Every entry of Table 1 of Essam, Guttmann, Jensen and TanlaKishani (1996) matches, rows 0–67, all six series ([analysis/egjt96_wall_table.txt](analysis/egjt96_wall_table.txt), [analysis/check_wall_table.py](analysis/check_wall_table.py)).
 - That table computed columns directly only to t = 49. Its T coefficients of order 50 and above also rested on a conjectured closed form for the leading column differences (their Eq. 14) and fitted corrections (Eq. 15). The direct computation confirms all of them to order 67, so the conjecture holds that far.
 
-**Cost.** 37 min per prime on the idle machine. Peak 28.3 M states and 2.2 GB. Total wall clock 6 h 51 min, including a pause and time shared with another job. States grow about 1.14× per order, so order 120 would need about 8 GB, which is out of reach without the memory work in M3.
+**Cost.** 37 min per prime on the idle machine. Peak 28.3 M states and 2.2 GB. Total wall clock 6 h 51 min, including a pause and time shared with another job. States grow about 1.14× per order, so order 120 would need about 8 GB, which is out of reach without the memory work in M3. (Done after that work: see F15.)
 
 **Biased estimates** ([results/analysis/wall110_biased.json](results/analysis/wall110_biased.json)): differential approximants with p_c fixed at Jensen's bulk value 0.644700185, L = 0, 3, 6, 9, and M = T−10 … T in steps of 2. Each entry is the median over approximants; the half-spread at 110 terms is 1–3 × 10⁻⁵.
 
@@ -504,3 +504,34 @@ The drift fits give error factors of 1.4× (ν∥) and 1.6× (2ν⊥) per 10 ter
 - Our own biased γ₁ is 1.82054(1) at 110 terms and still falling, by 2 × 10⁻⁴ since 67 terms. Jensen's 173-term value is 1.82051(1).
 - The direct estimate τ₁ = 1.00010(2) and Jensen's scaling-relation value 1.00014(2) differ by 1.4 combined σ. The gap is about the size of the remaining drift in the S estimates, which converge more slowly than T.
 - So the two routes agree that τ₁ is just above 1. The direct route, converging faster, puts it slightly lower than the scaling route does.
+
+## F15. Wall series to 120 terms: τ₁ = 1.00012(3), still not 1
+
+**Question.** Does the F14 estimate τ₁ = 1.00010(2) hold with 10 more terms?
+
+**Series.** [results/series/wall120.json](results/series/wall120.json): order 120 from five 31-bit primes ([analysis/wall120_queue.sh](analysis/wall120_queue.sh)). The largest coefficient has 116 bits, and the fifth prime verifies the combination. The order-110 series of F14 is an exact prefix of all six series.
+
+**Cost.** The memory work in M3 (u64 keys, no per-state offsets, 31-bit residues; [enum/README.md](enum/README.md#dpwall-the-wall-series)) brought order 120 within reach of this laptop. Peak 98.9 M states and 3.8 GB of tables. About 60 min per prime with 6 threads, and 83 min for the first prime, which shared the machine with other runs. Total 5 h 22 min. Beyond order 121 the engine can now spill layers to disk (`--spill`).
+
+**Analysis** ([analysis/wall120_analysis.sh](analysis/wall120_analysis.sh), 18 min). These are the same three analyses as F14, at 110, 115 and 120 terms. The 110-term rows reproduce F14 exactly.
+
+Biased estimates at p_c = 0.644700185 ([results/analysis/wall120_biased.json](results/analysis/wall120_biased.json), [results/analysis/wall120_biased_robust.json](results/analysis/wall120_biased_robust.json)). These are medians over approximants. K = 2 and 3 use L = 0, 3, 6, 9; K = 4 uses L = 0–12 in steps of 2.
+
+| Terms | τ₁, K = 2 | τ₁, K = 3 | τ₁, K = 4 | γ₁, K = 2 | γ₁, K = 3 | γ₁, K = 4 | ν∥, K = 3 | ν⊥, K = 3 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 110 | 1.000103 | 1.000106 | 1.000096 | 1.820569 | 1.820546 | 1.820538 | 1.733839 | 1.096841 |
+| 115 | 1.000126 | 1.000114 | 1.000095 | 1.820563 | 1.820542 | 1.820535 | 1.733840 | 1.096838 |
+| 120 | 1.000141 | 1.000116 | 1.000098 | 1.820560 | 1.820536 | 1.820536 | 1.733840 | 1.096841 |
+
+- **Spread.** Half-spreads at 120 terms are 4 × 10⁻⁶ for K = 3 and 4–5 × 10⁻⁵ for K = 2 and K = 4.
+- **Drift.** K = 3 had fallen from 67 to 100 terms. It has turned up since then, by 1 × 10⁻⁵ over the last 10 terms. K = 2 rose by 4 × 10⁻⁵, and K = 4 stayed flat. So the different K no longer agree as closely as they did at 110 terms. The upward turn means F14's error bar was too small.
+- **Critical point.** Moving p_c by ±5 × 10⁻⁹ moves τ₁ by ±3 × 10⁻⁶, as in F14.
+- **Sanity check.** The wall ratios still give the bulk ν∥ and ν⊥ to within 1 × 10⁻⁵.
+
+**Unbiased estimates** ([results/analysis/wall120_unbiased.json](results/analysis/wall120_unbiased.json)). At 120 terms, K = 3 gives x_c = 0.64470007 and τ₁ = 1.00006 ± 7 × 10⁻⁵. K = 2 gives x_c = 0.6447001 and τ₁ = 1.00011 ± 2.1 × 10⁻⁴. These are tighter than at 110 terms, but they still cannot separate 1 from 1.0001.
+
+**Verdict.**
+- **τ₁ = 1.00012(3).** This covers K = 2–4 at 120 terms: 1.000098 to 1.000141.
+- Every biased estimate lies at least 9.5 × 10⁻⁵ above 1, and none of them is moving toward 1. So the conjecture τ₁ = 1 remains strongly disfavoured, with the same caveat as F14 about a confluent correction with a very small exponent.
+- The direct value now agrees with Jensen's scaling-relation value 1.00014(2): the two differ by 0.6 combined σ, down from 1.4σ in F14. K = 2 at 120 terms gives his value exactly.
+- Through the scaling relation, τ₁ = 1.00012(3) implies γ₁ = 1.82049(3). Jensen's 1.82051(1) lies inside that range. Our own biased γ₁ is 1.82054(2) and still falling by about 1 × 10⁻⁵ per 10 terms.

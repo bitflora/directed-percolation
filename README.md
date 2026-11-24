@@ -9,13 +9,13 @@ Literature search completed November 21, 2026. Implementation started the same n
 
 Results so far are in [FINDINGS.md](FINDINGS.md), and the milestone status is at the top of [RESEARCH_PLAN.md](RESEARCH_PLAN.md).
 
-Headline: an independent implementation reproduced Jensen's 1999 results at his own lengths. All four moment series are verified to 171 terms (bond) and 158 terms (site), and p_c, γ, ν∥, 2ν⊥ and the moment exponents all agree within his error bars, as does the site critical point from universality. The precision-gain gate passed, so extending to 200–230 terms is worth doing. Next to a wall, a new direct series for the mean cluster length (110 terms) gives τ₁ = 1.00010(2), against the conjecture τ₁ = 1.
+Headline: an independent implementation reproduced Jensen's 1999 results at his own lengths. All four moment series are verified to 171 terms (bond) and 158 terms (site), and p_c, γ, ν∥, 2ν⊥ and the moment exponents all agree within his error bars, as does the site critical point from universality. The precision-gain gate passed, so extending to 200–230 terms is worth doing. Next to a wall, a new direct series for the mean cluster length (120 terms) gives τ₁ = 1.00012(3), against the conjecture τ₁ = 1.
 
 Main findings from the literature search (computed results are in [FINDINGS.md](FINDINGS.md), summarized at its top):
 
 - The 1999 record still stands.
 - The published rational conjecture for the bulk exponents is already excluded by 10 to 90 error bars, so the "hidden exact solution" angle is a long shot.
-- A sharper near-exact question remains at a wall: τ₁ = 1.00014(2) against the conjecture τ₁ = 1. A direct 110-term series computed here gives τ₁ = 1.00010(2), which disfavours τ₁ = 1 (FINDINGS F14).
+- A sharper near-exact question remains at a wall: τ₁ = 1.00014(2) against the conjecture τ₁ = 1. A direct 120-term series computed here gives τ₁ = 1.00012(3), which disfavours τ₁ = 1 (FINDINGS F14, F15).
 - The 1+1 experiments are Couette and pipe flow. The liquid-crystal experiments are 2+1. All measure exponents to about two digits.
 - With the 1999 algorithm, this 16 GB machine would reach only about order 179. The new engine needs roughly 6× less memory for the same series, which put order 171 within reach locally: about 12 min per prime for S, μ₀₁, μ₀₂ (u32, `--no-x`, 2.2 GB) and about 23 min per prime for all moments (u16, 2.1 GB working set, while another job used every core). A worthwhile extension beyond 171 still needs rented memory or a better algorithm.
 
