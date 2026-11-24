@@ -21,12 +21,15 @@ from fractions import Fraction
 
 sys.path.insert(0, __file__.rsplit("\\", 1)[0].rsplit("/", 1)[0])
 import da  # noqa: E402
+from series_input import load_record, validate_order  # noqa: E402
 
 
 def series_div(a, b, n):
     """a / b as power series to n terms (Fractions); b[0] != 0."""
+    if n < 0 or len(a) < n or len(b) < n:
+        raise ValueError("division requires n known coefficients in both input series")
     out = []
-    a = [Fraction(x) for x in a[:n]] + [Fraction(0)] * max(0, n - len(a))
+    a = [Fraction(x) for x in a[:n]]
     for k in range(n):
         s = a[k] - sum(out[i] * b[k - i] for i in range(max(0, k - len(b) + 1), k))
         out.append(s / b[0])
@@ -45,6 +48,7 @@ def series_mul(a, b, n):
 
 def derived(ser, n):
     """Ratio series. mu01 and mu02 start at p^1, so divide both by p first."""
+    validate_order(ser, n, [k for k in ("S", "mu01", "mu02", "mu20") if k in ser])
     m01 = ser["mu01"][1:n + 1]
     m02 = ser["mu02"][1:n + 1]
     r1 = series_div(m02, m01, n)
@@ -96,8 +100,9 @@ def main():
     ap.add_argument("--mstep", type=int, default=1)
     ap.add_argument("--max-per", type=int, default=None, help="degree assignments per (M, L)")
     ap.add_argument("-o")
+    ap.add_argument("--allow-unverified", action="store_true", help="analyse exploratory, unverified series")
     a = ap.parse_args()
-    ser = json.load(open(a.series_json))[a.key]
+    ser = load_record(a.series_json, a.key, a.allow_unverified)
     guess = a.guess or (0.6447 if ser["model"] == "bond" else 0.70549)
     results = []
     for T in a.terms:

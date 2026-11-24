@@ -20,6 +20,7 @@ import numpy as np
 sys.path.insert(0, __file__.rsplit("\\", 1)[0].rsplit("/", 1)[0])
 import da  # noqa: E402
 from gate import TARGET, derived  # noqa: E402
+from series_input import load_record  # noqa: E402
 
 
 def main():
@@ -32,8 +33,9 @@ def main():
     ap.add_argument("--span", type=int, default=10)
     ap.add_argument("--target", nargs="*", default=[], help="quantity=value pairs to locate crossings")
     ap.add_argument("-o")
+    ap.add_argument("--allow-unverified", action="store_true", help="analyse exploratory, unverified series")
     a = ap.parse_args()
-    ser = json.load(open(a.series_json))[a.key]
+    ser = load_record(a.series_json, a.key, a.allow_unverified)
     T = ser["order"]
     der = derived(ser, T)
     allser = {"S": ser["S"], "mu01": ser["mu01"], "mu02": ser["mu02"], "R1": der["R1"]}

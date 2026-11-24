@@ -52,6 +52,7 @@ enum Sink<K> {
 
 /// One generation of the layer, split into target shards.
 pub struct Gen<K: Key> {
+    directory: Option<PathBuf>,
     paths: Vec<PathBuf>,
     sinks: Vec<Mutex<Sink<K>>>,
     nkeys: Vec<AtomicUsize>,
@@ -64,11 +65,24 @@ impl<K: Key> Gen<K> {
     /// `dir`: spill to files there; None: keep the generation in memory.
     pub fn new(dir: Option<&Path>, id: usize, nshards: usize) -> Self {
         let on_disk = dir.is_some();
+        // Atomically reserve a private namespace, even when processes share
+        // the spill root or a previous process left files behind.
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let directory = dir.map(|root| loop {
+            let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = root.join(format!("dpwall-{}-{serial}-g{id}", std::process::id()));
+            match fs::create_dir(&path) {
+                Ok(()) => break path,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => panic!("create spill namespace {path:?}: {e}"),
+            }
+        });
         Gen {
-            paths: match dir {
+            paths: match &directory {
                 Some(d) => (0..nshards).map(|s| d.join(format!("g{id}_{s}.bin"))).collect(),
                 None => Vec::new(),
             },
+            directory,
             sinks: (0..nshards).map(|_| Mutex::new(if on_disk { Sink::Disk(None) } else { Sink::Memory(Parts::new()) })).collect(),
             nkeys: (0..nshards).map(|_| AtomicUsize::new(0)).collect(),
             ncoefs: (0..nshards).map(|_| AtomicUsize::new(0)).collect(),
@@ -161,9 +175,38 @@ impl<K: Key> Gen<K> {
 
 impl<K: Key> Drop for Gen<K> {
     fn drop(&mut self) {
+        // Close any remaining writers before deleting files on Windows.
+        self.sinks.clear();
         for p in &self.paths {
             let _ = fs::remove_file(p);
         }
+        if let Some(d) = &self.directory {
+            let _ = fs::remove_dir(d);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generations_sharing_a_root_do_not_overwrite_or_delete_each_other() {
+        let root = std::env::temp_dir();
+        let a = Gen::<u64>::new(Some(&root), 1, 1);
+        let b = Gen::<u64>::new(Some(&root), 1, 1);
+        for (out, value) in [(&a, 11 as C), (&b, 22 as C)] {
+            out.write(0, &[2], &[0], &[0], &[value]);
+            out.close();
+        }
+        assert_eq!(a.take(0).unwrap().arena, vec![11 as C]);
+        let a_dir = a.directory.clone().unwrap();
+        drop(a);
+        assert!(!a_dir.exists());
+        assert_eq!(b.take(0).unwrap().arena, vec![22 as C]);
+        let b_dir = b.directory.clone().unwrap();
+        drop(b);
+        assert!(!b_dir.exists());
     }
 }
 

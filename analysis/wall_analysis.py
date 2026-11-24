@@ -29,12 +29,14 @@ import numpy as np
 sys.path.insert(0, __file__.rsplit("\\", 1)[0].rsplit("/", 1)[0])
 import da  # noqa: E402
 from gate import series_div  # noqa: E402
+from series_input import load_record, validate_order  # noqa: E402
 
 TARGET = {"T": "tau_1", "S": "gamma_1", "mt1": "gamma_1+nu_par", "mt2": "gamma_1+2nu_par",
           "mx1": "gamma_1+nu_perp", "mx2": "gamma_1+2nu_perp", "Rt": "nu_par", "Rx": "nu_perp"}
 
 
 def all_series(ser, T):
+    validate_order(ser, T, ("T", "S", "mt1", "mt2", "mx1", "mx2"))
     out = {k: ser[k][:T + 1] for k in ("T", "S", "mt1", "mt2", "mx1", "mx2")}
     # mt*, mx* start at p^1: divide by p before forming ratios
     out["Rt"] = series_div(ser["mt2"][1:T + 1], ser["mt1"][1:T + 1], T)
@@ -57,8 +59,9 @@ def main():
     ap.add_argument("--guess", type=float, default=0.6447)
     ap.add_argument("--xc", nargs="*", default=None, help="biased mode: critical points to impose")
     ap.add_argument("-o")
+    ap.add_argument("--allow-unverified", action="store_true", help="analyse exploratory, unverified series")
     a = ap.parse_args()
-    ser = json.load(open(a.series_json))[a.key]
+    ser = load_record(a.series_json, a.key, a.allow_unverified)
     Ls = range(0, a.Lmax + 1, a.Lstep)
     results = []
     for T in a.terms:

@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 import flint
 import numpy as np
+from series_input import load_record
 
 PREC_BITS = 400
 
@@ -121,8 +122,37 @@ def approximant(a, K, L, degs, theta=None, bias=None):
 def _rel_ok(x, digits=30):
     if not x.is_finite():
         return False
-    mid = abs(float(x.mid())) if x.mid() != 0 else 1e-300
-    return float(x.rad()) <= mid * 10 ** (-digits) + 1e-300 * 0
+    return x.rad() <= abs(x.mid()) * flint.arb(f"1e-{digits}")
+
+
+def _refine_root(qpoly, r0):
+    """Find a simple real root, then certify its enclosure by interval Newton."""
+    dq = qpoly.derivative()
+    x = flint.arb(r0)
+    for _ in range(60):
+        derivative = dq(x)
+        if not derivative.is_finite() or derivative.contains(0):
+            return None
+        step = qpoly(x) / derivative
+        if not step.is_finite():
+            return None
+        x = (x - step.mid()).mid()
+        if abs(step.mid()) < flint.arb("1e-45"):
+            break
+    else:
+        return None
+    # Point iteration is only a seed: its midpoint alone carries no root
+    # error bound. Strict interval-Newton inclusion certifies a unique root.
+    interval = flint.arb(x, abs(x) * flint.arb("1e-32") + flint.arb("1e-60"))
+    derivative = dq(interval)
+    if not derivative.is_finite() or derivative.contains(0):
+        return None
+    root = x - qpoly(x) / derivative
+    if not interval.contains_interior(root) or not _rel_ok(root):
+        return None
+    if not qpoly(root).contains(0):
+        return None
+    return root
 
 
 def analyse_one(a, K, L, degs, guess, theta=None, window=0.05):
@@ -131,33 +161,35 @@ def analyse_one(a, K, L, degs, guess, theta=None, window=0.05):
         return None
     Q, P = res
     qk = Q[K]
-    if not all(_rel_ok(c, 25) or abs(float(c.mid())) < 1e-200 for c in qk):
+    if not all(_rel_ok(c, 25) for c in qk):
         return None
     # rough roots with numpy (coefficients in increasing order)
     coeffs = [float(c.mid()) for c in qk]
+    if not all(math.isfinite(c) for c in coeffs):
+        return None
     while coeffs and coeffs[-1] == 0:
         coeffs.pop()
     if len(coeffs) < 2:
         return None
-    roots = np.roots(coeffs[::-1])
+    try:
+        roots = np.roots(coeffs[::-1])
+    except np.linalg.LinAlgError:
+        return None
     real_near = [r for r in roots if abs(r.imag) < 1e-6 and abs(r.real - guess) < window]
     if not real_near:
         return None
     r0 = min(real_near, key=lambda r: abs(r.real - guess)).real
-    # Newton refinement in arb
+    # Certify the root and propagate its uncertainty into the exponent.
     qpoly = flint.arb_poly(qk)
     dq = qpoly.derivative()
-    x = flint.arb(r0)
-    for _ in range(60):
-        fx = qpoly(x)
-        step = fx / dq(x)
-        x = x - step.mid()
-        if abs(float(step.mid())) < 1e-60:
-            break
-    x = flint.arb(x.mid())
+    x = _refine_root(qpoly, r0)
+    if x is None or abs(float(x.mid()) - guess) >= window or abs(float(x.mid()) - r0) > 1e-6:
+        return None
     qkm1 = flint.arb_poly(Q[K - 1])
     mu = K - 1 - qkm1(x) / (x * dq(x))
     lam = -mu
+    if not _rel_ok(lam) or not math.isfinite(float(lam.mid())):
+        return None
     others = [complex(r) for r in roots if abs(r - r0) > 1e-8]
     return Estimate(M=sum(d + 1 for d in degs) + L, K=K, L=L, degs=tuple(degs),
                     xc=float(x.mid()), xc_str=x.mid().str(40, radius=False),
@@ -248,9 +280,8 @@ def summarize(ests, label=""):
             "exponent": med_l, "exponent_spread": sl}
 
 
-def load_series(path, key, name):
-    d = json.load(open(path))
-    return d[key][name]
+def load_series(path, key, name, allow_unverified=False):
+    return load_record(path, key, allow_unverified)[name]
 
 
 if __name__ == "__main__":
@@ -266,9 +297,12 @@ if __name__ == "__main__":
     ap.add_argument("--Lmax", type=int, default=10)
     ap.add_argument("--Lstep", type=int, default=2)
     ap.add_argument("--span", type=int, default=12, help="M ranges over [T-span, T]")
+    ap.add_argument("--allow-unverified", action="store_true", help="analyse exploratory, unverified series")
     a = ap.parse_args()
-    s = load_series(a.series_json, a.key, a.name)
-    T = a.terms or len(s)
+    s = load_series(a.series_json, a.key, a.name, a.allow_unverified)
+    T = a.terms if a.terms is not None else len(s)
+    if not 1 <= T <= len(s):
+        ap.error(f"requested {T} terms; available terms: {len(s)}")
     s = s[:T]
     t0 = time.time()
     ests = ensemble(s, a.K, range(0, a.Lmax + 1, a.Lstep), range(T - a.span, T + 1), a.guess)

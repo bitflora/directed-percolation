@@ -11,6 +11,13 @@ target/release/dpenum -n 100 --site --first-prime 3 --primes 1   # just the 4th 
 python ../analysis/crt.py out.jsonl -o series.json               # exact series, checked with a spare prime
 ```
 
+CRT output is refused if the spare-prime check fails. `--allow-unverified`
+permits exploratory output with `verified: false`; the analysis commands also
+require `--allow-unverified` to consume such data. Requested analysis orders
+must fit the available coefficients. Unbiased differential approximants use
+interval Newton root certification and require 30-digit precision in both
+the critical point and exponent.
+
 Options:
 
 | Option | Meaning |
@@ -92,6 +99,10 @@ Further checks used during development:
 - u32 (31-bit) and u64 (62-bit) runs agree modulo 2^31 − 1;
 - the order-50 series is an exact prefix of the order-70 series.
 
+Run the Rust regression tests with `cargo test`, and the analysis accuracy
+regressions from the repository root with
+`python -m unittest discover -s analysis -p 'test_*.py'` (requires numpy and python-flint).
+
 ## dpwall: the wall series
 
 `src/wall.rs` builds a second binary, `dpwall`, for bond DP next to an impenetrable wall (sites with x < 0 removed, source at x = 0; Essam et al. 1996, Jensen 1999 II). It computes, modulo primes:
@@ -121,6 +132,7 @@ At order 100 (8.0 M states): v1 u64 about 616 MiB, v2 u64 525 MiB, v2 u32 298 Mi
 **Why not swap.** Each block reads the whole layer once and writes a new one, a cyclic scan. Under paging that is the worst case: the least recently used page is the next one needed, faults are small and synchronous, and Windows wastes time compressing incompressible residues.
 
 **Spilling to disk (`--spill DIR`).** Each block reads its input one target shard at a time, runs its steps, and splits the output by the next block's shard grouping straight into the next generation ([src/spill.rs](src/spill.rs)). A generation larger than `--spill-above` MiB (default 256) is written to disk as one file per shard, appended in chunks; reading a shard deletes its file. Smaller generations stay in memory through the same code path, so the early rows create no files. Each spilled block is one sequential read and one sequential write of the layer.
+- Each disk generation reserves a private subdirectory atomically, so independent runs can safely share the spill root. Its subdirectory is removed when the generation is released.
 - Memory holds only the shards in flight, about threads × 2 × layer ÷ shards. `--shards` defaults to 64 in spill mode; raise it for large layers. Every shard costs one file create and delete per block, so very many shards make small layers slow.
 - Disk needs about two layers' worth of space.
 - Beyond n = 121 the keys no longer fit in u64: build with `--features wide` (u128 keys, 8 more bytes per state). Features combine, for example `--features u32,wide`.

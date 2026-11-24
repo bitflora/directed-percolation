@@ -53,6 +53,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("runs")
     ap.add_argument("--check")
+    ap.add_argument("--allow-unverified", action="store_true",
+                    help="allow exploratory output when CRT verification fails")
     ap.add_argument("-o")
     a = ap.parse_args()
     groups = defaultdict(list)
@@ -62,11 +64,15 @@ def main():
                 r = json.loads(line)
                 groups[(r["model"], r["n"])].append(r)
     result = {}
+    if not groups:
+        raise SystemExit("no runs in input")
     for (model, n), recs in sorted(groups.items()):
         ser, bits = combine(recs)
         ok = all(v for k, v in ser.items() if k.endswith("_verified"))
         maxbits = max(abs(x).bit_length() for k, v in ser.items() if not k.endswith("_verified") for x in v)
         print(f"{model} n={n}: {len(recs)} primes ({bits} bits), largest coefficient {maxbits} bits, verified={ok}")
+        if not ok and not a.allow_unverified:
+            raise SystemExit("CRT verification failed; compute more primes or use --allow-unverified for exploratory output")
         result[f"{model}_{n}"] = {"model": model, "order": n, "primes": len(recs), "verified": ok,
                                   **{k: v for k, v in ser.items() if not k.endswith('_verified')}}
     if a.check:
