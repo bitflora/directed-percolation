@@ -7,12 +7,38 @@
 
 use crate::modp::{Mod, C};
 
-pub struct Table {
+/// A state key: u128 for the bulk engine, u64 where the boundary fits.
+pub trait Key: Copy + Eq {
+    const BYTES: usize;
+    fn hash64(self) -> u64;
+}
+
+impl Key for u128 {
+    const BYTES: usize = 16;
+    #[inline(always)]
+    fn hash64(self) -> u64 {
+        let x = (self as u64) ^ ((self >> 64) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x ^ (x >> 29)
+    }
+}
+
+impl Key for u64 {
+    const BYTES: usize = 8;
+    #[inline(always)]
+    fn hash64(self) -> u64 {
+        let x = self.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x ^ (x >> 29)
+    }
+}
+
+pub struct Table<K: Key = u128> {
     nm: usize,
-    keys: Vec<u128>,
+    keys: Vec<K>,
     lo: Vec<u8>,  // window ends: n <= 250, so a byte suffices
     hi: Vec<u8>,
-    off: Vec<u32>, // per-table (per-shard) arena offset in coefficients
+    off: Vec<u32>, // per-table (per-shard) arena offset in coefficients; empty when `seq`
+    seq: bool,     // blocks are read in order only (`iter`), so no offsets are kept
     pub arena: Vec<C>,
     slots: Vec<u32>, // index+1, 0 = empty
     mask: usize,
@@ -21,19 +47,17 @@ pub struct Table {
 }
 
 #[inline(always)]
-fn hash(k: u128) -> u64 {
-    let x = (k as u64) ^ ((k >> 64) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    let x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x ^ (x >> 29)
+fn hash<K: Key>(k: K) -> u64 {
+    k.hash64()
 }
 
 #[inline(always)]
-pub fn shard_of(base: u128, nshards: usize) -> usize {
+pub fn shard_of<K: Key>(base: K, nshards: usize) -> usize {
     let h = hash(base).wrapping_mul(0x94D0_49BB_1331_11EB);
     ((h >> 32) as usize * nshards) >> 32
 }
 
-impl Table {
+impl<K: Key> Table<K> {
     pub fn new(nm: usize, expect: usize) -> Self {
         let cap = (expect * 2).next_power_of_two().max(16);
         Table {
@@ -47,6 +71,7 @@ impl Table {
             mask: cap - 1,
             hashed: 0,
             is_hashed: Vec::with_capacity(expect),
+            seq: false,
         }
     }
     /// An append-only table (filled by `push_copy` only) with exact capacity.
@@ -62,7 +87,39 @@ impl Table {
             mask: 0,
             hashed: 0,
             is_hashed: Vec::with_capacity(keys),
+            seq: false,
         }
+    }
+    /// As `with_exact`, for a table that is only ever read in order (`iter`):
+    /// no per-state offsets are stored.
+    #[allow(dead_code)] // used by dpwall only
+    pub fn with_exact_seq(nm: usize, keys: usize, coefs: usize) -> Self {
+        let mut t = Self::with_exact(nm, keys, coefs);
+        t.off = Vec::new();
+        t.seq = true;
+        t
+    }
+    /// Drop the per-state offsets of a finished table; afterwards its blocks
+    /// can only be read in order, with `iter`.
+    #[allow(dead_code)] // used by dpwall only
+    pub fn drop_offsets(&mut self) {
+        assert!(self.slots.is_empty(), "call after finish");
+        self.off = Vec::new();
+        self.seq = true;
+    }
+    /// (key, lo, hi, block) for every state in order. Blocks are contiguous
+    /// in index order in finished and append-only tables.
+    #[allow(dead_code)] // used by dpwall only
+    pub fn iter(&self) -> impl Iterator<Item = (K, u32, u32, &[C])> + '_ {
+        assert!(self.slots.is_empty(), "iter needs a finished or append-only table");
+        let mut o = 0usize;
+        (0..self.keys.len()).map(move |i| {
+            let (lo, hi) = (self.lo[i] as u32, self.hi[i] as u32);
+            let len = (hi - lo + 1) as usize * self.nm;
+            let b = &self.arena[o..o + len];
+            o += len;
+            (self.keys[i], lo, hi, b)
+        })
     }
     /// Coefficients stored (all moments).
     pub fn coefs(&self) -> usize {
@@ -77,22 +134,15 @@ impl Table {
         self.keys.len()
     }
     pub fn bytes(&self) -> usize {
-        self.arena.capacity() * std::mem::size_of::<C>() + self.keys.capacity() * (16 + 1 + 1 + 4) + self.is_hashed.capacity() + self.slots.capacity() * 4
+        self.arena.capacity() * std::mem::size_of::<C>() + self.keys.capacity() * (K::BYTES + 2) + self.off.capacity() * 4 + self.is_hashed.capacity() + self.slots.capacity() * 4
     }
     #[inline(always)]
-    pub fn key(&self, i: usize) -> u128 {
+    pub fn key(&self, i: usize) -> K {
         self.keys[i]
     }
     #[inline(always)]
     pub fn window(&self, i: usize) -> (u32, u32) {
         (self.lo[i] as u32, self.hi[i] as u32)
-    }
-    pub fn max_width(&self) -> usize {
-        let mut w = 0;
-        for &k in &self.keys {
-            w = w.max(128 - k.leading_zeros() as usize);
-        }
-        w
     }
     fn grow(&mut self) {
         let cap = self.slots.len() * 2;
@@ -110,7 +160,7 @@ impl Table {
             self.slots[h] = i as u32 + 1;
         }
     }
-    fn push(&mut self, key: u128, lo: u32, hi: u32) -> usize {
+    fn push(&mut self, key: K, lo: u32, hi: u32) -> usize {
         let idx = self.keys.len();
         self.is_hashed.push(false);
         self.keys.push(key);
@@ -132,19 +182,21 @@ impl Table {
     }
     /// Append a key that no other source can produce in this step (no hashing).
     #[inline]
-    pub fn push_unique(&mut self, key: u128, lo: u32, hi: u32) -> usize {
+    pub fn push_unique(&mut self, key: K, lo: u32, hi: u32) -> usize {
         self.push(key, lo, hi)
     }
     /// Append a unique key whose coefficient block (all moments) is copied
     /// verbatim, without zero-filling the arena first.
     #[inline]
-    pub fn push_copy(&mut self, key: u128, lo: u32, hi: u32, block: &[C]) {
+    pub fn push_copy(&mut self, key: K, lo: u32, hi: u32, block: &[C]) {
         self.is_hashed.push(false);
         self.keys.push(key);
         self.lo.push(lo as u8);
         self.hi.push(hi as u8);
-        assert!(self.arena.len() < u32::MAX as usize, "shard arena exceeds 2^32 coefficients: use more shards");
-        self.off.push(self.arena.len() as u32);
+        if !self.seq {
+            assert!(self.arena.len() < u32::MAX as usize, "shard arena exceeds 2^32 coefficients: use more shards");
+            self.off.push(self.arena.len() as u32);
+        }
         let need = self.arena.len() + block.len();
         if need > self.arena.capacity() {
             let extra = (self.arena.capacity() / 4).max(block.len()).max(1024);
@@ -162,9 +214,9 @@ impl Table {
     /// Index and window of an existing hashed key, or compute its bound and
     /// insert it. Returns None if the state is dead. Probes the table once.
     #[inline]
-    pub fn get_or_insert<F: FnOnce(u128) -> Option<(u32, u32)>>(
+    pub fn get_or_insert<F: FnOnce(K) -> Option<(u32, u32)>>(
         &mut self,
-        key: u128,
+        key: K,
         f: F,
     ) -> Option<(usize, u32, u32)> {
         if (self.hashed + 1) * 2 > self.slots.len() {
@@ -253,7 +305,7 @@ impl Table {
     /// Rewrite every key. Only for tables without a hash index (after
     /// `finish`, or built by `push_copy`).
     #[allow(dead_code)]
-    pub fn map_keys<F: Fn(u128) -> u128>(&mut self, f: F) {
+    pub fn map_keys<F: Fn(K) -> K>(&mut self, f: F) {
         assert!(self.slots.is_empty());
         for k in self.keys.iter_mut() {
             *k = f(*k);
@@ -283,5 +335,15 @@ impl Table {
                 *d = m.add(*d, s);
             }
         }
+    }
+}
+
+impl Table<u128> {
+    pub fn max_width(&self) -> usize {
+        let mut w = 0;
+        for &k in &self.keys {
+            w = w.max(128 - k.leading_zeros() as usize);
+        }
+        w
     }
 }

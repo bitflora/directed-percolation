@@ -52,7 +52,9 @@ struct Params {
     verbose: bool,
 }
 
-type Layer = Vec<Table>;
+/// Keys are u64: row t uses bits up to t/2 + 3, so n <= 120 (checked in main).
+type Key = u64;
+type Layer = Vec<Table<Key>>;
 
 fn par_map<T: Send, F: Fn(usize) -> T + Sync>(count: usize, threads: usize, f: F) -> Vec<T> {
     use std::sync::atomic::AtomicUsize;
@@ -79,28 +81,27 @@ fn par_map<T: Send, F: Fn(usize) -> T + Sync>(count: usize, threads: usize, f: F
 
 /// Move the states into per-target-shard pieces (grouped by `group(key)`),
 /// freeing each source shard once it is split.
-fn split_layer<F: Fn(u128) -> u128 + Sync>(layer: Layer, nshards: usize, threads: usize, group: F) -> Vec<std::sync::Mutex<Vec<Table>>> {
+fn split_layer<F: Fn(Key) -> Key + Sync>(layer: Layer, nshards: usize, threads: usize, group: F) -> Vec<std::sync::Mutex<Layer>> {
     use std::sync::Mutex;
-    let srcs: Vec<Mutex<Option<Table>>> = layer.into_iter().map(|t| Mutex::new(Some(t))).collect();
-    let parts: Vec<Vec<Table>> = par_map(srcs.len(), threads, |si| {
+    let srcs: Vec<Mutex<Option<Table<Key>>>> = layer.into_iter().map(|t| Mutex::new(Some(t))).collect();
+    let parts: Vec<Layer> = par_map(srcs.len(), threads, |si| {
         let t = srcs[si].lock().unwrap().take().unwrap();
         let mut dest: Vec<u32> = Vec::with_capacity(t.len());
         let mut nk = vec![0usize; nshards];
         let mut nc = vec![0usize; nshards];
-        for i in 0..t.len() {
-            let d = shard_of(group(t.key(i)), nshards);
+        for (key, _, _, b) in t.iter() {
+            let d = shard_of(group(key), nshards);
             dest.push(d as u32);
             nk[d] += 1;
-            nc[d] += t.block(i).len();
+            nc[d] += b.len();
         }
-        let mut v: Vec<Table> = (0..nshards).map(|d| Table::with_exact(1, nk[d], nc[d])).collect();
-        for i in 0..t.len() {
-            let (lo, hi) = t.window(i);
-            v[dest[i] as usize].push_copy(t.key(i), lo, hi, t.block(i));
+        let mut v: Layer = (0..nshards).map(|d| Table::with_exact_seq(1, nk[d], nc[d])).collect();
+        for (i, (key, lo, hi, b)) in t.iter().enumerate() {
+            v[dest[i] as usize].push_copy(key, lo, hi, b);
         }
         v
     });
-    let mut out: Vec<Vec<Table>> = (0..nshards).map(|_| Vec::with_capacity(parts.len())).collect();
+    let mut out: Vec<Layer> = (0..nshards).map(|_| Vec::with_capacity(parts.len())).collect();
     for part in parts {
         for (k, t) in part.into_iter().enumerate() {
             if t.len() > 0 {
@@ -116,7 +117,7 @@ fn split_layer<F: Fn(u128) -> u128 + Sync>(layer: Layer, nshards: usize, threads
 /// lo: the union of paths to k distinct boundary sites has >= t + k - 1 bonds.
 /// hi: every unprocessed occupied parent still needs at least one bond.
 #[inline]
-fn window(key: u128, t: usize, above: u32, n: usize) -> Option<(u32, u32)> {
+fn window(key: Key, t: usize, above: u32, n: usize) -> Option<(u32, u32)> {
     let k = key.count_ones() as usize;
     if k == 0 {
         return None;
@@ -132,7 +133,7 @@ fn window(key: u128, t: usize, above: u32, n: usize) -> Option<(u32, u32)> {
 /// Add src (coefficients from order slo) times p^shift, negated if `neg`,
 /// into the state with key `key` of `nt`.
 #[inline]
-fn add_to(nt: &mut Table, key: u128, src: &[C], slo: u32, shift: u32, neg: bool, t: usize, above: u32, n: usize, m: Mod) {
+fn add_to(nt: &mut Table<Key>, key: Key, src: &[C], slo: u32, shift: u32, neg: bool, t: usize, above: u32, n: usize, m: Mod) {
     let Some((idx, lo, hi)) = nt.get_or_insert(key, |k| window(k, t, above, n)) else {
         return;
     };
@@ -147,7 +148,7 @@ fn add_to(nt: &mut Table, key: u128, src: &[C], slo: u32, shift: u32, neg: bool,
 }
 
 /// One step (parent j of row t) on every state of `srcs`, into a new table.
-fn step(srcs: &[Table], t: usize, j: usize, p: &Params, m: Mod) -> Table {
+fn step(srcs: &[Table<Key>], t: usize, j: usize, p: &Params, m: Mod) -> Table<Key> {
     let e = if t % 2 == 0 { 1 } else { 0 };
     let pb = (j + 2 - e) as u32; // bit P: parent j
     let wall = j < e; // the left child would be child -1
@@ -155,13 +156,10 @@ fn step(srcs: &[Table], t: usize, j: usize, p: &Params, m: Mod) -> Table {
     let n = p.n;
     let total: usize = srcs.iter().map(|s| s.len()).sum();
     let mut nt = Table::new(1, total + total / 4);
-    let bp = 1u128 << pb;
-    let bl = 1u128 << (pb - 1);
+    let bp: Key = 1 << pb;
+    let bl: Key = 1 << (pb - 1);
     for s in srcs {
-        for i in 0..s.len() {
-            let key = s.key(i);
-            let (slo, shi) = s.window(i);
-            let w = s.block(i);
+        for (key, slo, shi, w) in s.iter() {
             // Targets whose bit P-1 is clear have exactly one source (the
             // identity for bits 00, the R move for bits 01): append them
             // without hashing. The windows need no clipping: P was not a
@@ -192,6 +190,7 @@ fn step(srcs: &[Table], t: usize, j: usize, p: &Params, m: Mod) -> Table {
         }
     }
     nt.finish();
+    nt.drop_offsets();
     nt
 }
 
@@ -201,9 +200,10 @@ fn run(p: &Params, m: Mod) -> [Vec<C>; 6] {
     ser[1][0] = 1; // S: the origin
     // row 0: parent 0 at bit 0 - 1 + 2 = 1
     let mut first = Table::new(1, 1);
-    let (idx, _, _) = first.get_or_insert(1u128 << 1, |_| Some((0, 0))).unwrap();
+    let (idx, _, _) = first.get_or_insert(1 << 1, |_| Some((0, 0))).unwrap();
     first.coef_mut(idx, 0)[0] = 1;
     first.finish();
+    first.drop_offsets();
     let mut layer: Layer = vec![first];
     let t0 = Instant::now();
     let mut peak_states = 0usize;
@@ -217,7 +217,7 @@ fn run(p: &Params, m: Mod) -> [Vec<C>; 6] {
             // bits touched by steps j..jend: P-1 of the first to P of the last
             let lo_bit = j + 1 - e;
             let hi_bit = jend - 1 + 2 - e;
-            let touched: u128 = ((1u128 << (hi_bit + 1)) - 1) & !((1u128 << lo_bit) - 1);
+            let touched: Key = ((1 << (hi_bit + 1)) - 1) & !((1 << lo_bit) - 1);
             let pieces = split_layer(std::mem::take(&mut layer), p.shards, p.threads, |k| k & !touched);
             layer = par_map(pieces.len(), p.threads, |si| {
                 let mut srcs = std::mem::take(&mut *pieces[si].lock().unwrap());
@@ -239,10 +239,7 @@ fn run(p: &Params, m: Mod) -> [Vec<C>; 6] {
         let parts: Vec<[Vec<C>; 6]> = par_map(layer.len(), p.threads, |si| {
             let s = &layer[si];
             let mut acc: [Vec<C>; 6] = std::array::from_fn(|_| vec![0 as C; n + 1]);
-            for i in 0..s.len() {
-                let key = s.key(i);
-                let (lo, _) = s.window(i);
-                let w = s.block(i);
+            for (key, lo, _, w) in s.iter() {
                 let k = key.count_ones();
                 let neg = k % 2 == 0;
                 for (d, &c) in w.iter().enumerate() {
@@ -338,7 +335,8 @@ fn main() {
         }
         i += 1;
     }
-    assert!(n <= 240, "keys are u128 and windows u8");
+    // row t uses key bits up to t/2 + 3 (relabelled), and rows run to n - 1
+    assert!((n - 1) / 2 + 3 < 64, "keys are u64: n <= 121");
     let shards = if threads <= 1 { 1 } else { threads * 8 };
     let p = Params { n, threads, shards, block, verbose };
     let primes = modp::primes(first_prime + nprimes);

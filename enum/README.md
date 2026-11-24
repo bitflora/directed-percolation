@@ -109,6 +109,15 @@ python ../analysis/crt.py wall110.jsonl -o wall110.json
 
 **Sweep.** One parent at a time. Step j changes only two adjacent key bits (the pending child and parent j), so a step maps groups of at most four states to themselves. Blocks of steps run in parallel on shards keyed by the untouched bits, as in the bulk engine. Targets whose pending-child bit is clear have a single source and are appended without hashing (about 1.4× faster).
 
-**Cost** (u64 residues, 6 threads, one prime): order 67 in 4.5 s, 80 in 45 s, 90 in 135 s, 100 in about 10 min with 8 M states and 0.6 GB, 110 in 37 min with 28 M states and 2.2 GB. States grow by about 1.14 per order and time by about 1.16, so order 120 would need about 8 GB.
+**Cost** (v1: u64 residues, u128 keys, 6 threads, one prime): order 67 in 4.5 s, 80 in 45 s, 90 in 135 s, 100 in about 10 min with 8 M states and 0.6 GB, 110 in 37 min with 28 M states and 2.2 GB. States grow by about 1.14 per order and time by about 1.16.
+
+**Memory (v2).** Tighter order bounds cannot shrink the state count: a wall state contributes to P(t) on every row, so no future bonds are owed, and a state whose weight vanishes below order n + 1 is already dropped when its window is trimmed. The savings come from bytes per state instead:
+- Keys are u64 (row t uses bits up to t/2 + 3, so n ≤ 121).
+- Layer tables are read only in order, so they keep no per-state arena offsets (`Table::drop_offsets`, `Table::iter`).
+- Per-state overhead falls from 22 to 10 bytes. Coefficients (about 8 per state at the peak) dominate the rest, so the 31-bit build (`--features u32`) roughly halves the total.
+
+At order 100 (8.0 M states): v1 u64 about 616 MiB, v2 u64 525 MiB, v2 u32 298 MiB (and 239 s against 393 s, from the halved memory traffic). Order 120 with v2 u32 is projected at about 4 GB and needs five 31-bit primes ([analysis/wall120_queue.sh](../analysis/wall120_queue.sh)).
+
+**Why not swap.** Each block reads the whole layer once and writes a new one, a cyclic scan. Under paging that is the worst case: the least recently used page is the next one needed, faults are small and synchronous, and Windows wastes time compressing incompressible residues. Past what fits in RAM, the right route is spilling the per-target pieces of `split_layer` to files (an external partition with one sequential read and write per block).
 
 **Tests.** `analysis/wall_ground_truth.py N --check` computes the same series by the exact Domany–Kinzel transfer matrix and by the path-union expansion in Python, and compares both with Table 1 of Essam et al. (1996). The engine reproduces the fixture `analysis/wall_order30.json` and every entry of that table to order 67 (`analysis/egjt96_wall_table.txt`; `analysis/check_wall_table.py` does the comparison).
