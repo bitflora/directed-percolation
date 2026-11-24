@@ -7,7 +7,7 @@
 # Resume, after a pause, kill or reboot: run this script again. Finished
 # primes are skipped and the current prime continues from its checkpoint.
 cd "$(dirname "$0")/.."
-SPILL=${SPILL:-C:/Users/timja/dpspill}
+SPILL=${SPILL:-spill/wall130}  # inside the repo (gitignored)
 log() { echo "[$(date '+%F %T')] $*" >> results/logs/queue.log; }
 log "start wall130 (u32+wide, 6 primes, 6 threads, spill $SPILL)"
 results/dpwall_v3_u32_wide.exe -n 130 --threads 6 --block 6 --shards 256 --primes 6 \

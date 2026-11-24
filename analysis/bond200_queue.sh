@@ -8,7 +8,7 @@
 # Resume, after a pause, kill or reboot: run this script again. Finished
 # primes are skipped and the current prime continues from its checkpoint.
 cd "$(dirname "$0")/.."
-SPILL=${SPILL:-C:/Users/timja/dpspill_bond}
+SPILL=${SPILL:-spill/bond200}  # inside the repo (gitignored)
 log() { echo "[$(date '+%F %T')] $*" >> results/logs/queue.log; }
 log "start bond200 (u32, all moments, 8 primes, 6 threads, spill $SPILL)"
 results/dpenum_v15_u32.exe -n 200 --bond --threads 6 --shards 768 --primes 8 \

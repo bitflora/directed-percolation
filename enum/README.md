@@ -158,7 +158,7 @@ At order 100 (8.0 M states): v1 u64 about 616 MiB, v2 u64 525 MiB, v2 u32 298 Mi
 
 ```
 cargo build --release --bin dpwall --features u32,wide --target-dir target_u32_wide
-target_u32_wide/release/dpwall -n 130 --threads 6 --spill D:/dpspill --shards 256 --primes 6 -v -o wall130.jsonl
+target_u32_wide/release/dpwall -n 130 --threads 6 --spill ../spill/wall130 --shards 256 --primes 6 -v -o wall130.jsonl
 ```
 
 **Tests.** `analysis/wall_ground_truth.py N --check` computes the same series by the exact Domany–Kinzel transfer matrix and by the path-union expansion in Python, and compares both with Table 1 of Essam et al. (1996). The engine reproduces the fixture `analysis/wall_order30.json` and every entry of that table to order 67 (`analysis/egjt96_wall_table.txt`; `analysis/check_wall_table.py` does the comparison).
