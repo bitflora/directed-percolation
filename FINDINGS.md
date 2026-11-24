@@ -20,7 +20,7 @@ Running record of results for the directed percolation study. Each claim lists i
 - **Solvability.** There is no small linear ODE for any of the series (F6). On rings, the poles of the mean cluster size pinch toward p_c and cluster around the bulk non-physical singularities: a first look at the haruspicy route (F9).
 - **Second night (November 22–23).** μ₂₀ at 171 terms completes Jensen's set; every unbiased estimate, including 2ν⊥ = 2.1937077 and γ + 2ν⊥ = 4.4714139, agrees with his. The μ₂₀μ₀₂/μ₀₁² critical point (0.6447001905) sits 5 × 10⁻⁹ above the S and μ₀₂/μ₀₁ ones, inside his error bar; this gap is the clearest target for longer series. A split-layer parallel step cut peak memory by about 30% (F12). The site series then reached 158 terms in 1 h 48 min; every site estimate agrees with Jensen's, and biased approximants give p_c(site) = 0.70548521, against his 0.70548522(4) (F13).
 - **Wall (M5, F14).** A new direct series for the mean cluster length next to a wall, to 110 terms (3 primes, 37 min each), confirms every entry of the 1996 wall table, including terms that rested on a conjectured closed form. Extended to 120 terms after the memory work (five 31-bit primes, 3.8 GB, about 1 h per prime), biased approximants give τ₁ = 1.00012(3), up from 1.00010(2) at 110 terms (F15). The conjecture τ₁ = 1 is strongly disfavoured, and Jensen's scaling-relation value 1.00014(2) now agrees within 0.6σ.
-- **Compute decision (M4).** Measured: order 171 for S, μ₀₁ and μ₀₂ takes 12 min per prime with 6 threads and 2.2 GB on this laptop (F11), and parallel efficiency is about 60–75% (F7). Orders 200 and above need a large-memory machine; projections are in F7.
+- **Compute decision (M4).** Measured: order 171 for S, μ₀₁ and μ₀₂ takes 12 min per prime with 6 threads and 2.2 GB on this laptop (F11), and parallel efficiency is about 60–75% (F7). Since the out-of-core mode (November 24), memory no longer binds: a spilled run reproduced bond 171 with a 509 MiB peak in 55 min per prime, and order 200 is projected at about 15 h per prime on this laptop (F7).
 
 ## F1. Independent ground truth for small orders (M0)
 
@@ -250,6 +250,24 @@ This is a weak exclusion. Known D-finite lattice series often need ODEs far larg
 | 6, `--block 16` | 29.5 s | 1.7× | 145 MiB |
 
 Parallel efficiency is about 75% at 4 threads and 60% at 6 here, limited by the busy physical cores. The parallel mode lacks streaming, so it needs about 40% more memory. The block size matters. At 6 threads, blocks of 2, 4, 6, 8 and 12 took 15.8, 13.9, 14.0, 14.2 and 17.2 s, so 4–8 is best (default 8). In the first measurement, a block of 16 took twice as long as 8. Scaling on a many-core server is still unmeasured; it is the first thing to check before renting one.
+
+**Update, November 24: out of core changes the decision.** `dpenum --spill` streams every layer through disk ([enum/README.md](enum/README.md), commit b28d71a), so memory no longer limits the order on this laptop. Measured with the u32 build, bond, all four moments, one prime and 4 threads, while the order-130 wall run used the other 6:
+
+| Run | Peak working set | Time | Largest layer | Disk traffic |
+| --- | --- | --- | --- | --- |
+| n = 150, in memory | 700 MiB | 726 s | n/a | n/a |
+| n = 150, spilled | 359 MiB | 673 s | n/a | small |
+| n = 171, spilled | 509 MiB | 55 min | 2.6 GB on disk | 226 GiB |
+
+All three outputs agree exactly with the stored 171-term series. Streaming through disk is no slower than holding the layer in memory, and memory holds only the shards in flight: about threads × 2 × layer ÷ shards, so `--shards` has to grow with the layer. The binding constraints are now time and disk space. Scaling by 1.09 per term for size and 1.10 per term for time gives these projections:
+
+| Bond order | Layer on disk | Time per prime (4 threads, shared) | Primes (31-bit) | Disk writes per prime |
+| --- | --- | --- | --- | --- |
+| 190 | about 13 GB | about 6 h | 7 | about 1.4 TB |
+| 200 | about 32 GB | about 15 h | 8 | about 3.6 TB |
+| 210 | about 75 GB, 150 GB disk | about 38 h | 8 | about 9 TB |
+
+The largest coefficients (μ₀₂) grow by about 0.96 bits per term (164 bits at 171). That is about 193 bits at order 200, so seven 31-bit primes carry them and an eighth verifies. Order 200 therefore fits on the laptop: about 5 days sharing the machine, less on its own. Order 210 is at the limit of the free disk. A large-memory node is no longer needed below about 210 terms; beyond that, a cloud run with the same spill mode needs disk rather than RAM.
 
 ## F8. Site series to orders 136 and 146, and the site critical point from universality
 

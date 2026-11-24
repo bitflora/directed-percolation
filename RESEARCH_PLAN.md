@@ -11,8 +11,8 @@ Status, morning of November 22, 2026:
 | M0 ground truth | Done: three independent exact methods agree to order 15 (F1) |
 | M1 reimplementation | Done in [enum/](enum/README.md). Verified bond series to 171 terms, all four moments (Jensen's full 1999 set); site to 158 terms, all four moments. Every estimate at both lengths agrees with Jensen's within his errors (FINDINGS F11, F12, F13) |
 | M2 analysis and gate | Done. **Gate passed**: ν∥ and ν⊥ improve about 1.6–2× per 10 terms (FINDINGS F5) |
-| M3 engineering | Partly done (F2, F3): shape, mirror, zero-state and window-trimming reductions; mask bounds and exact lower ends for single-source targets; u32 and u16 builds, streaming and block-parallel steps. Not yet done: SIMD, out-of-core, Zbarsky sparsification, and measuring parallel efficiency on an idle machine |
-| M4 compute decision | Open; measured projections in FINDINGS |
+| M3 engineering | Partly done (F2, F3): shape, mirror, zero-state and window-trimming reductions; mask bounds and exact lower ends for single-source targets; u32 and u16 builds, streaming and block-parallel steps. Out-of-core streaming with pause and resume, in both engines (FINDINGS F7, F15). Not yet done: SIMD, Zbarsky sparsification, and measuring parallel efficiency on an idle machine |
+| M4 compute decision | Out of core, order 200 fits on this laptop: bond to 200 started November 24 (FINDINGS F7) |
 | M5 | Wall series done: direct T to 120 terms with all wall moments; τ₁ = 1.00012(3), so τ₁ = 1 is disfavoured (FINDINGS F14, F15). Bulk extension beyond 171 not started |
 | M6 | Started: D-finiteness search (no ODE with (k + 1)(d + 1) ≤ 147); exact ring rational functions up to L = 10 (F6, F9) |
 | M7 | FINDINGS.md kept current; no paper draft yet |
