@@ -1,0 +1,29 @@
+row   1 -> states           1 layer MiB      0.0 mem  peak states           3 peak layer MiB      0.0 peak shard MiB    0.0 heap peak MiB      0.5 disk I/O GiB    0.00       0.6s
+row   2 -> states           3 layer MiB      0.0 mem  peak states           5 peak layer MiB      0.0 peak shard MiB    0.0 heap peak MiB      0.5 disk I/O GiB    0.00       1.2s
+row   3 -> states           6 layer MiB      0.0 mem  peak states          11 peak layer MiB      0.0 peak shard MiB    0.0 heap peak MiB      0.6 disk I/O GiB    0.00       1.7s
+row   4 -> states          12 layer MiB      0.0 mem  peak states          23 peak layer MiB      0.0 peak shard MiB    0.0 heap peak MiB      0.6 disk I/O GiB    0.00       1.8s
+row   5 -> states          22 layer MiB      0.0 mem  peak states          47 peak layer MiB      0.0 peak shard MiB    0.0 heap peak MiB      0.7 disk I/O GiB    0.00       2.0s
+row   6 -> states          42 layer MiB      0.0 mem  peak states          93 peak layer MiB      0.0 peak shard MiB    0.0 heap peak MiB      0.8 disk I/O GiB    0.00       2.3s
+row   7 -> states          78 layer MiB      0.0 mem  peak states         186 peak layer MiB      0.1 peak shard MiB    0.1 heap peak MiB      1.0 disk I/O GiB    0.00       2.8s
+row   8 -> states         150 layer MiB      0.1 mem  peak states         369 peak layer MiB      0.2 peak shard MiB    0.2 heap peak MiB      1.5 disk I/O GiB    0.00       3.4s
+row   9 -> states         286 layer MiB      0.2 mem  peak states         736 peak layer MiB      0.5 peak shard MiB    0.2 heap peak MiB      2.3 disk I/O GiB    0.00       4.1s
+row  10 -> states         558 layer MiB      0.4 mem  peak states        1467 peak layer MiB      1.1 peak shard MiB    0.3 heap peak MiB      3.7 disk I/O GiB    0.00       4.9s
+row  11 -> states        1086 layer MiB      1.1 mem  peak states        2930 peak layer MiB      2.8 peak shard MiB    0.4 heap peak MiB      5.7 disk I/O GiB    0.00       5.6s
+row  12 -> states        2142 layer MiB      2.5 mem  peak states        5853 peak layer MiB      6.9 peak shard MiB    0.7 heap peak MiB     10.2 disk I/O GiB    0.00       6.3s
+row  13 -> states        4222 layer MiB      5.8 mem  peak states       11700 peak layer MiB     15.9 peak shard MiB    0.9 heap peak MiB     23.3 disk I/O GiB    0.00       6.8s
+row  14 -> states        8382 layer MiB     11.3 mem  peak states       23391 peak layer MiB     31.7 peak shard MiB    1.0 heap peak MiB     47.2 disk I/O GiB    0.00       7.8s
+row  15 -> states       16638 layer MiB     21.1 mem  peak states       46774 peak layer MiB     59.7 peak shard MiB    2.1 heap peak MiB     87.3 disk I/O GiB    0.00       9.0s
+row  16 -> states       33150 layer MiB     39.1 mem  peak states       93537 peak layer MiB    110.8 peak shard MiB    4.5 heap peak MiB    161.0 disk I/O GiB    0.00      10.5s
+row  17 -> states       66046 layer MiB     71.8 mem  peak states      187064 peak layer MiB    204.4 peak shard MiB    4.5 heap peak MiB    298.9 disk I/O GiB    0.00      13.1s
+row  18 -> states      131838 layer MiB    130.5 disk peak states      374115 peak layer MiB    372.9 peak shard MiB    5.4 heap peak MiB    494.1 disk I/O GiB    1.53      22.6s
+row  19 -> states      263166 layer MiB    235.0 disk peak states      748218 peak layer MiB    672.3 peak shard MiB    6.5 heap peak MiB    494.1 disk I/O GiB    5.51      49.1s
+row  20 -> states      525822 layer MiB    417.0 disk peak states     1496421 peak layer MiB   1194.5 peak shard MiB    8.3 heap peak MiB    494.1 disk I/O GiB   12.56      88.5s
+row  21 -> states     1050622 layer MiB    726.5 disk peak states     2992828 peak layer MiB   2086.1 peak shard MiB   11.9 heap peak MiB    494.1 disk I/O GiB   24.88     151.3s
+row  22 -> states     2100221 layer MiB   1233.6 disk peak states     5985638 peak layer MiB   3561.2 peak shard MiB   17.7 heap peak MiB    494.1 disk I/O GiB   52.93     285.8s
+row  23 -> states     4198069 layer MiB   2037.9 disk peak states    11970463 peak layer MiB   5909.0 peak shard MiB   22.3 heap peak MiB    494.1 disk I/O GiB   99.62     542.5s
+paused at row 23 phase 1, 659.7s: rerun the same command to resume
+resuming prime 2147483647 at row 23 phase 1 (659.7s done)
+row  24 -> states     8345519 layer MiB   3202.6 disk peak states    23825799 peak layer MiB   9367.6 peak shard MiB   32.6 heap peak MiB    233.8 disk I/O GiB  174.11     963.8s
+row  25 -> states    15870327 layer MiB   4692.9 disk peak states    45585065 peak layer MiB  14205.1 peak shard MiB   45.7 heap peak MiB    311.6 disk I/O GiB  286.19    1717.4s
+row  26 -> states    26629269 layer MiB   6199.5 disk peak states    77752333 peak layer MiB  19281.4 peak shard MiB   59.6 heap peak MiB    417.2 disk I/O GiB  439.41    2808.3s
+paused at row 26 phase 2, 3477.4s: rerun the same command to resume

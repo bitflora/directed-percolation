@@ -30,3 +30,15 @@
 [2026-11-23 16:37:55] wall110 done (exit 0)
 [2026-11-23 21:35:23] start wall120 (u32, primes 0..4, 6 threads)
 [2026-11-24 02:57:49] wall120 done (exit 0)
+[2026-11-24 10:20:46] start wall130 (u32+wide, 6 primes, 6 threads, spill C:/Users/timja/dpspill)
+[2026-11-24 12:45:10] start bond200 (u32, all moments, 8 primes, 6 threads, spill C:/Users/timja/dpspill_bond)
+[2026-11-24 12:56:13] bond200 paused
+[2026-11-24 12:56:21] wall130 paused
+[2026-11-24 12:57:01] start wall130 (u32+wide, 6 primes, 6 threads, spill spill/wall130)
+[2026-11-24 12:57:01] start bond200 (u32, all moments, 8 primes, 6 threads, spill spill/bond200)
+[2026-11-24 13:43:18] wall130 paused
+[2026-11-24 13:44:00] bond200 paused
+[2026-11-24 22:39:09] start wall130 (u32+wide, 6 primes, 6 threads, spill spill/wall130)
+[2026-11-24 22:49:19] after_wall130: waiting for wall130 to exit, then bond200
+[2026-11-25 09:16:26] wall130 paused
+[2026-11-25 09:16:56] after_wall130: wall130 exited with 2 of 6 primes; bond200 not started
