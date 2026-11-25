@@ -84,6 +84,11 @@ Changes relative to 1999:
    - So the minimum number of windows of length d covering the occupied columns bounds the vertex count of those rows.
    - Summing gives a lower bound `lo` on the bonds (sites) already placed, and a lower bound on those still needed. Partially processed columns are treated as fuzzy intervals.
    - Each state stores only coefficients `lo..hi`, and a state with lo > hi is dropped. Tightening `lo` alone cuts the state count by 4.6× at n = 100.
+   - **Two-pass steps** (`step_batch`, the default with threads or `--spill`; `--no-batch` for the one-pass `step_one`). Pass 1 inserts every target as a pending entry, then all new windows are computed in one batch, then pass 2 adds coefficients. A target's `lo` is the least (source `lo` + degree shift) over its sources. Source windows are trimmed to their nonzero range, so this is a valid lower bound and never below the interval cover, which then only has to compute `hi`. `DP_KEY_LO=1` restores the cover's `lo` for comparison.
+   - Keys below 2^63 take a 64-bit copy of the cover code (`bound_fast`, about 2.25× faster than u128, identical results).
+   - Measured on bond n = 200 from the row-26 checkpoint to the end of row 27 (6 threads, 768 shards): 321–341 s before, 303 s with the 64-bit bound, 285 s with two-pass steps. The state counts are identical.
+   - `--gpu` (build with `--features gpu`, CUDA and nvcc) computes the batches on the GPU. On the laptop GPU it gains no more than the run-to-run noise, because CPU work slows while the GPU runs.
+   - Tools: `--features prof` prints per-stage thread time and `prof-fine` adds per-call timers (which inflate totals by about 25%). `DP_DUMP_BOUND=FILE` (with batching) samples bound inputs, and `--bench-bound FILE` replays them to check `bound_fast` against `bound_inner` and time both.
 4. **No hashing for unique targets.** Targets that only one source can produce are appended without hashing, and identity steps reuse the source's window.
 5. **Exact zeros and trimming.** All-zero states (exact cancellations) are dropped, and every window is trimmed to its nonzero range after each step. A target that only one source produces inherits the source's exact lower end.
 6. **Mask-based bounds.** The interval covers run on 128-bit masks, a few bit operations per window.

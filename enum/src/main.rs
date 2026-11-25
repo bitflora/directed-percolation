@@ -64,9 +64,10 @@ pub struct Params {
     pub park: bool,     // single-thread mode: parked pass (--park): ~11% faster, ~46% more memory
     pub spill: Option<std::path::PathBuf>, // --spill DIR: out-of-core sweep (`run_spill`)
     pub spill_above: u64, // bytes: generations larger than this go to disk
-    pub batch: bool, // --batch: two-pass steps with batched bounds (`step_batch`)
+    pub batch: bool, // two-pass steps with batched bounds (`step_batch`), the default; --no-batch for `step_one`
     pub gpu: bool,   // --gpu: batched bounds on the GPU (implies --batch)
     pub gpu_min: usize, // batches smaller than this stay on the CPU (DP_GPU_MIN)
+    pub key_lo: bool, // DP_KEY_LO=1: batched steps take hashed targets' lower ends from the interval cover
 }
 
 /// Heap accounting (current and peak bytes), so reported peaks are measured
@@ -222,7 +223,7 @@ mod tests {
         let tmax = if model == Model::Bond { n / 2 } else { (n + 1) / 2 };
         Params { n, model, tmax, moments: 3, verbose: false, profile: false, loose: false, mirror: true,
                  threads: 1, shards: 1, slack: false, nosign: false, cheap_lo: false, block: 8, park: true,
-                 spill: None, spill_above: 0, batch: false, gpu: false, gpu_min: 0 }
+                 spill: None, spill_above: 0, batch: false, gpu: false, gpu_min: 0, key_lo: false }
     }
 
     #[test]
@@ -285,13 +286,13 @@ pub fn bound(key: u128, j: usize, s: usize, p: &Params) -> Option<(u32, u32)> {
 pub fn bound_with(key: u128, j: usize, s: usize, p: &Params, lo_known: Option<u32>) -> Option<(u32, u32)> {
     if p.profile {
         let t0 = Instant::now();
-        let r = bound_inner(key, j, s, p, lo_known);
+        let r = bound_fast(key, j, s, p, lo_known);
         profile_add(3, t0.elapsed().as_nanos() as u64);
         profile_add(4, 1);
         return r;
     }
     prof::add_fine(prof::N_BOUND, 1);
-    prof::time_fine(prof::BOUND, || bound_inner(key, j, s, p, lo_known))
+    prof::time_fine(prof::BOUND, || bound_fast(key, j, s, p, lo_known))
 }
 
 /// Greedy window cover on bit masks. Points are intervals [l, l] (bit l of
@@ -362,6 +363,96 @@ fn bound_inner(key: u128, j: usize, s: usize, p: &Params, lo_known: Option<u32>)
     let mut rmin = 0u32;
     loop {
         let g = if rmin == 0 { g0 } else { cover_mask(fut_fixed, fut_fuzzy, rmin) };
+        if g <= 1 {
+            break;
+        }
+        if p.model == Model::Bond || rmin >= 1 {
+            extra += g;
+        }
+        rmin += 1;
+    }
+    if p.model == Model::Site && rmin >= 1 {
+        extra += 1;
+    }
+    if s + 1 + rmin as usize > p.tmax {
+        return None;
+    }
+    if p.loose {
+        return Some((0, p.n as u32));
+    }
+    if (lo + extra) as usize > p.n {
+        return None;
+    }
+    Some((lo, p.n as u32 - extra))
+}
+
+/// `cover_mask` on 64-bit masks; requires `fixed | fuzzy << 1` to fit in 64
+/// bits. A window ending at e >= 63 covers every remaining point, where the
+/// u128 version would see them dropped and return on the next pass.
+#[inline(always)]
+fn cover_mask64(mut fixed: u64, mut fuzzy: u64, d: u32) -> u32 {
+    let mut count = 0u32;
+    loop {
+        let r = fixed | (fuzzy << 1);
+        if r == 0 {
+            return count;
+        }
+        count += 1;
+        let e = r.trailing_zeros() + d;
+        if e >= 63 {
+            return count;
+        }
+        let keep = !((2u64 << e) - 1);
+        fixed &= keep;
+        fuzzy &= keep;
+    }
+}
+
+/// Same result as `bound_inner`; keys below 2^63 take a 64-bit path.
+#[inline]
+fn bound_fast(key: u128, j: usize, s: usize, p: &Params, lo_known: Option<u32>) -> Option<(u32, u32)> {
+    if key >> 63 != 0 {
+        return bound_inner(key, j, s, p, lo_known);
+    }
+    let key = key as u64;
+    let below_j: u64 = if j >= 64 { !0 } else { (1u64 << j) - 1 };
+    let upto_j: u64 = if j >= 63 { !0 } else { (2u64 << j) - 1 };
+    let past_fixed = key & !below_j;
+    let past_fuzzy = key & below_j;
+    let fut_fixed = (key & upto_j) << 1;
+    let fut_fuzzy = key & !upto_j;
+    let nfixed = (key & upto_j).count_ones();
+    let nunproc = (key & !upto_j).count_ones();
+
+    let mut lo: u32 = nfixed;
+    let mut d = 0u32;
+    if let Some(l) = lo_known {
+        lo = l;
+        d = s as u32;
+    } else if p.cheap_lo {
+        lo += 2 * s as u32;
+        d = s as u32;
+    }
+    while (d as usize) < s {
+        let g = cover_mask64(past_fixed, past_fuzzy, d);
+        if g <= 2 {
+            lo += 2 * (s as u32 - d);
+            break;
+        }
+        lo += g;
+        d += 1;
+    }
+    if lo as usize > p.n {
+        return None;
+    }
+    let g0 = cover_mask64(fut_fixed, fut_fuzzy, 0);
+    let mut extra: u32 = match p.model {
+        Model::Bond => nunproc,
+        Model::Site => g0 - nfixed.min(g0),
+    };
+    let mut rmin = 0u32;
+    loop {
+        let g = if rmin == 0 { g0 } else { cover_mask64(fut_fixed, fut_fuzzy, rmin) };
         if g <= 1 {
             break;
         }
@@ -1388,6 +1479,7 @@ fn bound_batch(keys: &[u128], lo_known: &[i32], j1: usize, s: usize, p: &Params,
         prof::time(prof::GPU, || gpu::bound(keys, lo_known, j1, s, p, out));
         return;
     }
+    dump_bounds(keys, lo_known, j1, s);
     let t = prof::tsc();
     out.extend(keys.iter().zip(lo_known).map(|(&k, &l)| {
         let lk = if l >= 0 { Some(l as u32) } else { None };
@@ -1396,6 +1488,82 @@ fn bound_batch(keys: &[u128], lo_known: &[i32], j1: usize, s: usize, p: &Params,
     if !prof::FINE {
         prof::add(prof::BOUND, prof::tsc() - t);
         prof::add(prof::N_BOUND, keys.len() as u64);
+    }
+}
+
+/// Development aid (DP_DUMP_BOUND=FILE, with --batch): append every
+/// DP_DUMP_EVERY-th batch (default 64) of bound inputs as 24-byte records
+/// (key u128, lo_known i32, j u16, s u16) for `--bench-bound`.
+fn dump_bounds(keys: &[u128], lo_known: &[i32], j1: usize, s: usize) {
+    use std::sync::{Mutex, OnceLock};
+    static DUMP: OnceLock<Option<(Mutex<std::fs::File>, u64)>> = OnceLock::new();
+    static SEEN: AtomicU64 = AtomicU64::new(0);
+    let d = DUMP.get_or_init(|| {
+        let path = std::env::var("DP_DUMP_BOUND").ok()?;
+        let every = std::env::var("DP_DUMP_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
+        Some((Mutex::new(std::fs::File::create(path).unwrap()), every))
+    });
+    let Some((f, every)) = d else { return };
+    if SEEN.fetch_add(1, Ordering::Relaxed) % every != 0 {
+        return;
+    }
+    let mut buf = Vec::with_capacity(keys.len() * 24);
+    for (&k, &l) in keys.iter().zip(lo_known) {
+        buf.extend_from_slice(&k.to_le_bytes());
+        buf.extend_from_slice(&l.to_le_bytes());
+        buf.extend_from_slice(&(j1 as u16).to_le_bytes());
+        buf.extend_from_slice(&(s as u16).to_le_bytes());
+    }
+    f.lock().unwrap().write_all(&buf).unwrap();
+}
+
+/// `--bench-bound FILE`: replay dumped bound inputs through `bound_inner` and
+/// `bound_fast`, check that they agree exactly, and time both.
+fn bench_bound(path: &str, p: &Params) {
+    let raw = std::fs::read(path).unwrap();
+    let recs: Vec<(u128, Option<u32>, usize, usize)> = raw
+        .chunks_exact(24)
+        .map(|c| {
+            let k = u128::from_le_bytes(c[0..16].try_into().unwrap());
+            let l = i32::from_le_bytes(c[16..20].try_into().unwrap());
+            let j = u16::from_le_bytes(c[20..22].try_into().unwrap()) as usize;
+            let s = u16::from_le_bytes(c[22..24].try_into().unwrap()) as usize;
+            (k, if l >= 0 { Some(l as u32) } else { None }, j, s)
+        })
+        .collect();
+    let wide = recs.iter().filter(|r| r.0 >> 63 != 0).count();
+    let known = recs.iter().filter(|r| r.1.is_some()).count();
+    eprintln!("{} records, {} keys over 63 bits, {} with known lo", recs.len(), wide, known);
+    let mut bad = 0usize;
+    for &(k, l, j, s) in &recs {
+        if bound_inner(k, j, s, p, l) != bound_fast(k, j, s, p, l) {
+            bad += 1;
+            if bad <= 5 {
+                eprintln!("MISMATCH key {k:#x} j {j} s {s} lo_known {l:?}: {:?} vs {:?}", bound_inner(k, j, s, p, l), bound_fast(k, j, s, p, l));
+            }
+        }
+    }
+    eprintln!("mismatches: {bad}");
+    for round in 0..3 {
+        for (name, f) in [("inner", bound_inner as fn(u128, usize, usize, &Params, Option<u32>) -> Option<(u32, u32)>), ("fast", bound_fast)] {
+            let t = Instant::now();
+            let mut acc = 0u64;
+            for &(k, l, j, s) in &recs {
+                if let Some((a, b)) = f(std::hint::black_box(k), j, s, p, l) {
+                    acc = acc.wrapping_add((a ^ b) as u64);
+                }
+            }
+            let ns = t.elapsed().as_nanos() as f64 / recs.len() as f64;
+            eprintln!("round {round} {name:6} {ns:7.1} ns/call  (check {acc})");
+        }
+        let t = Instant::now();
+        let mut acc = 0u64;
+        for &(k, _l, j, s) in &recs {
+            if let Some((a, b)) = bound_fast(std::hint::black_box(k), j, s, p, Some(0)) {
+                acc = acc.wrapping_add((a ^ b) as u64);
+            }
+        }
+        eprintln!("round {round} future-only (fast) {:7.1} ns/call", t.elapsed().as_nanos() as f64 / recs.len() as f64);
     }
 }
 
@@ -1414,6 +1582,14 @@ fn step_batch(srcs: &[&Table], nt: &mut Table, j: usize, s: usize, p: &Params, m
     let mut bkeys: Vec<u128> = Vec::with_capacity(total);
     let mut blo: Vec<i32> = Vec::with_capacity(total);
     let mut bpos: Vec<u32> = Vec::with_capacity(total);
+    // Lower end of each new state: the least (source lower end + shift) over
+    // its sources. Source windows are trimmed to their nonzero range, so each
+    // source has a configuration at its lower end, and the target one at that
+    // plus the shift: this is a lower bound on the target's orders, and never
+    // below the interval-cover bound (which bounds every configuration), so it
+    // replaces the cover's past loop. DP_KEY_LO=1 uses the cover instead.
+    let key_lo = p.key_lo;
+    let mut lomin: Vec<u32> = Vec::with_capacity(total * 2);
     // pass 1: targets
     for src in srcs {
         for i in 0..src.len() {
@@ -1423,6 +1599,7 @@ fn step_batch(srcs: &[&Table], nt: &mut Table, j: usize, s: usize, p: &Params, m
                 if p.profile { profile_add(2, 1); }
                 tgt.push(nt.pend_push(key) as u32);
                 windows.push((lo, hi));
+                lomin.push(lo);
                 continue;
             };
             for &(nkey, e, _neg, unique) in &tr[..ntr] {
@@ -1430,13 +1607,22 @@ fn step_batch(srcs: &[&Table], nt: &mut Table, j: usize, s: usize, p: &Params, m
                 if new {
                     bpos.push(windows.len() as u32);
                     windows.push((1, 0));
+                    lomin.push(lo + e);
                     bkeys.push(nkey);
-                    blo.push(if unique { (lo + e) as i32 } else { -1 });
+                    blo.push(if unique || !key_lo { -2 } else { -1 }); // -2: filled from lomin below
+                } else {
+                    lomin[idx] = lomin[idx].min(lo + e);
                 }
                 tgt.push(idx as u32);
             }
         }
     }
+    for (l, &pos) in blo.iter_mut().zip(&bpos) {
+        if *l == -2 {
+            *l = lomin[pos as usize] as i32;
+        }
+    }
+    drop(lomin);
     // windows of the new states, then the arena
     let mut bw = Vec::new();
     bound_batch(&bkeys, &blo, j + 1, s, p, &mut bw);
@@ -1621,13 +1807,14 @@ fn main() {
     let mut first_prime = 0usize;
     let mut moments = 3usize;
     let mut out: Option<String> = None;
+    let mut bench: Option<String> = None;
     let mut verbose = false;
     let mut loose = false;
     let mut mirror = true;
     let mut threads = 4usize;
     let mut block = 8usize;
     let mut park = false;
-    let mut batch = false;
+    let mut batch = true; // two-pass steps (multithreaded and spilled runs); --no-batch for the one-pass step
     let mut gpu = false;
     let gpu_min: usize = std::env::var("DP_GPU_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(4096);
     let mut shards: Option<usize> = None;
@@ -1659,6 +1846,7 @@ fn main() {
             "--no-mirror" => mirror = false,
             "--park" => park = true,
             "--batch" => batch = true,
+            "--no-batch" => batch = false,
             "--gpu" => {
                 if !cfg!(feature = "gpu") {
                     eprintln!("--gpu needs a build with --features gpu");
@@ -1688,6 +1876,10 @@ fn main() {
                 i += 1;
             }
             "-v" => verbose = true,
+            "--bench-bound" => {
+                bench = Some(args[i + 1].clone());
+                i += 1;
+            }
             a => panic!("unknown argument {a}"),
         }
         i += 1;
@@ -1711,7 +1903,11 @@ fn main() {
     let nosign = std::env::var("DP_NOSIGN").is_ok();
     let cheap_lo = std::env::var("DP_CHEAP_LO").is_ok();
     let profile = std::env::var("DP_PROFILE").is_ok();
-    let p = Params { n, model, tmax, moments, verbose, profile, loose, mirror, threads, shards, slack, nosign, cheap_lo, block, park, spill, spill_above: spill_above_mib << 20, batch, gpu, gpu_min };
+    let p = Params { n, model, tmax, moments, verbose, profile, loose, mirror, threads, shards, slack, nosign, cheap_lo, block, park, spill, spill_above: spill_above_mib << 20, batch, gpu, gpu_min, key_lo: std::env::var("DP_KEY_LO").is_ok() };
+    if let Some(b) = bench {
+        bench_bound(&b, &p);
+        return;
+    }
     let primes = modp::primes(first_prime + nprimes);
     // spill mode: primes already in the output file are done, so rerunning
     // the same command resumes a queue
