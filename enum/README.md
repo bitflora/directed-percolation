@@ -156,6 +156,13 @@ At order 100 (8.0 M states): v1 u64 about 616 MiB, v2 u64 525 MiB, v2 u32 298 Mi
   - Resumed output is identical: tested with a pause and with a hard kill at order 80.
 - Generation directories are named by order, prime and block (`dpwall-n<N>-p<prime>-g<block>`). Runs with different orders or primes can share a spill root; two runs of the same order and prime must not.
 - Memory holds only the shards in flight, about threads × 2 × layer ÷ shards. `--shards` defaults to 64 in spill mode; raise it for large layers. Every shard costs one file create and delete per block, so very many shards make small layers slow.
+- **Read-ahead and write-behind** (both engines).
+  - Two threads read the input shards ahead of the workers, in the order the workers take them, at most one shard per worker thread ahead (`DP_PREFETCH=N` sets the number of reader threads; 0 turns read-ahead off).
+  - Workers serialize each chunk straight into its shard's pending buffer. Two writer threads write full 256 KiB buffers through a bounded queue.
+  - Extra memory: about threads shards plus shards × 256 KiB of buffers.
+  - Bond n = 200 from the row-26 checkpoint to the end of row 27 (768 shards), alternating builds on an idle machine: 271 → 269 s and 288 → 275 s, about 3% faster.
+  - Worker time spent waiting for reads fell from 191 to 65 thread-s, and time in file writes from 92 to 8. Most of the remaining cost is copying, which the extra threads now do on the same six cores.
+  - The file format is unchanged, so earlier checkpoints resume.
 - Disk needs about two layers' worth of space: the input generation is kept until its block is checkpointed.
 - The bulk engine has the same mode: `dpenum --spill DIR` (see Build and run).
 - Beyond n = 121 the keys no longer fit in u64: build with `--features wide` (u128 keys, 8 more bytes per state). Features combine, for example `--features u32,wide`.

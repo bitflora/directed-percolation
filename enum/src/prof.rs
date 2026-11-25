@@ -37,7 +37,12 @@ pub const N_PHASE: usize = 22;
 pub const GPU: usize = 23; // waiting on GPU bound batches
 pub const N_GPU: usize = 24; // states bounded on the GPU
 pub const N_GPU_CALLS: usize = 25;
-const NB: usize = 26;
+pub const W_DEST: usize = 26; // write_split: destination shards and permutation
+pub const W_GATHER: usize = 27; // write_split: gather each destination's chunk
+pub const W_OUT: usize = 28; // write_split: Gen::write (lock, buffer, syscalls)
+pub const T_READ: usize = 29; // take: open and read a shard file
+pub const T_INDEX: usize = 30; // take: rebuild offsets (into_indexed)
+const NB: usize = 31;
 const NAMES: [&str; 11] = ["take", "step", "finish", "write", "rowend", "bound", "get_or_insert", "accumulate", "push", "busy", "split"];
 
 static TOTAL: [AtomicU64; NB] = [const { AtomicU64::new(0) }; NB];
@@ -136,6 +141,10 @@ pub fn report(threads: usize) {
         eprintln!("prof: main {:10} {:8.2} s  {:5.1}% of wall", name, v, 100.0 * v / wall);
     }
     eprintln!("prof: phases {}", g(N_PHASE));
+    for (k, name) in [(W_DEST, "write: dest"), (W_GATHER, "write: gather"), (W_OUT, "write: out"), (T_READ, "take: read"), (T_INDEX, "take: index")] {
+        let v = g(k) as f64 / hz;
+        eprintln!("prof: {:14} {:10.2} thread-s  {:5.1}% of capacity", name, v, 100.0 * v / cap);
+    }
     let gs = g(GPU) as f64 / hz;
     eprintln!("prof: gpu wait {:.2} thread-s, {} batches, {} states ({:.1} M/thread-s, {:.0} per batch)", gs, g(N_GPU_CALLS), g(N_GPU), g(N_GPU) as f64 / gs.max(1e-9) / 1e6, g(N_GPU) as f64 / g(N_GPU_CALLS).max(1) as f64);
     eprintln!(

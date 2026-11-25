@@ -67,6 +67,7 @@ pub struct Params {
     pub batch: bool, // two-pass steps with batched bounds (`step_batch`), the default; --no-batch for `step_one`
     pub gpu: bool,   // --gpu: batched bounds on the GPU (implies --batch)
     pub gpu_min: usize, // batches smaller than this stay on the CPU (DP_GPU_MIN)
+    pub prefetch: usize, // spill: threads reading the next shards ahead of the workers (DP_PREFETCH, default 2; 0 = off)
     pub key_lo: bool, // DP_KEY_LO=1: batched steps take hashed targets' lower ends from the interval cover
 }
 
@@ -223,7 +224,7 @@ mod tests {
         let tmax = if model == Model::Bond { n / 2 } else { (n + 1) / 2 };
         Params { n, model, tmax, moments: 3, verbose: false, profile: false, loose: false, mirror: true,
                  threads: 1, shards: 1, slack: false, nosign: false, cheap_lo: false, block: 8, park: true,
-                 spill: None, spill_above: 0, batch: false, gpu: false, gpu_min: 0, key_lo: false }
+                 spill: None, spill_above: 0, batch: false, gpu: false, gpu_min: 0, prefetch: 0, key_lo: false }
     }
 
     #[test]
@@ -1083,9 +1084,18 @@ pub fn run_spill(p: &Params, m: Mod, prime: u64) -> Raw {
             let t = s + 1;
             prof::add(prof::N_PHASE, 1);
             let _tp = prof::tsc();
-            let res: Vec<(usize, usize, usize, Option<Scratch>)> = par_map(ns, p.threads, |d| {
+            let pre = spill::Prefetch::new(&gen, nm, p.threads);
+            let prefetch = gen.on_disk && p.prefetch > 0;
+            let res: Vec<(usize, usize, usize, Option<Scratch>)> = std::thread::scope(|sc| {
+            if prefetch {
+                for _ in 0..p.prefetch {
+                    sc.spawn(|| pre.reader());
+                }
+            }
+            par_map(ns, p.threads, |d| {
                 let _tb = prof::tsc();
-                let Some(src) = prof::time(prof::TAKE, || gen.take(d, nm).map(|t| t.into_indexed())) else {
+                let got = prof::time(prof::TAKE, || if prefetch { pre.get(d) } else { gen.take(d, nm) });
+                let Some(src) = got.map(|t| prof::time(prof::T_INDEX, || t.into_indexed())) else {
                     return (0, 0, 0, None);
                 };
                 let (cnt, nc) = (src.len(), src.coefs());
@@ -1123,6 +1133,7 @@ pub fn run_spill(p: &Params, m: Mod, prime: u64) -> Raw {
                 }
                 prof::add(prof::BUSY, prof::tsc() - _tb);
                 (cur.len(), mem.max(cur.bytes()), cur.max_width(), sc)
+            })
             });
             prof::add(prof::M_PAR, prof::tsc() - _tp);
             prof::time(prof::M_CLOSE, || out.close());
@@ -1903,7 +1914,7 @@ fn main() {
     let nosign = std::env::var("DP_NOSIGN").is_ok();
     let cheap_lo = std::env::var("DP_CHEAP_LO").is_ok();
     let profile = std::env::var("DP_PROFILE").is_ok();
-    let p = Params { n, model, tmax, moments, verbose, profile, loose, mirror, threads, shards, slack, nosign, cheap_lo, block, park, spill, spill_above: spill_above_mib << 20, batch, gpu, gpu_min, key_lo: std::env::var("DP_KEY_LO").is_ok() };
+    let p = Params { n, model, tmax, moments, verbose, profile, loose, mirror, threads, shards, slack, nosign, cheap_lo, block, park, spill, spill_above: spill_above_mib << 20, batch, gpu, gpu_min, prefetch: std::env::var("DP_PREFETCH").ok().and_then(|v| v.parse().ok()).unwrap_or(2), key_lo: std::env::var("DP_KEY_LO").is_ok() };
     if let Some(b) = bench {
         bench_bound(&b, &p);
         return;

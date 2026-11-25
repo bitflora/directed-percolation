@@ -12,12 +12,13 @@
 //! holds only the shards in flight.
 
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::modp::C;
+use crate::prof;
 use crate::table::{shard_of, Key, Table};
 
 fn bytes_of<T: Copy>(v: &[T]) -> &[u8] {
@@ -47,9 +48,24 @@ impl<K> Parts<K> {
     }
 }
 
+/// Pending bytes of a disk shard are handed to the writer threads once they
+/// reach this size (so up to nshards x this is buffered, plus the queue).
+const FLUSH_BYTES: usize = 1 << 18;
+/// Buffers queued for the writer threads before senders block.
+const QUEUE: usize = 32;
+const WRITERS: usize = 2;
+
 enum Sink<K> {
     Memory(Parts<K>),
-    Disk(Option<BufWriter<File>>),
+    /// serialized chunks not yet handed to a writer thread
+    Disk(Vec<u8>),
+}
+
+/// Background writer threads for a generation on disk: workers hand them
+/// full shard buffers, so file writes overlap computation.
+struct Writer {
+    tx: std::sync::mpsc::SyncSender<(usize, Vec<u8>)>,
+    handles: Vec<std::thread::JoinHandle<()>>,
 }
 
 /// One generation of the layer, split into target shards.
@@ -57,6 +73,8 @@ pub struct Gen<K: Key> {
     directory: Option<PathBuf>,
     paths: Vec<PathBuf>,
     sinks: Vec<Mutex<Sink<K>>>,
+    files: std::sync::Arc<Vec<Mutex<Option<File>>>>,
+    writer: Mutex<Option<Writer>>,
     nkeys: Vec<AtomicUsize>,
     ncoefs: Vec<AtomicUsize>,
     bytes: AtomicU64,
@@ -64,6 +82,19 @@ pub struct Gen<K: Key> {
 }
 
 impl<K: Key> Gen<K> {
+    fn blank(nshards: usize, on_disk: bool) -> Self {
+        Gen {
+            directory: None,
+            paths: Vec::new(),
+            sinks: (0..nshards).map(|_| Mutex::new(if on_disk { Sink::Disk(Vec::new()) } else { Sink::Memory(Parts::new()) })).collect(),
+            files: std::sync::Arc::new((0..nshards).map(|_| Mutex::new(None)).collect()),
+            writer: Mutex::new(None),
+            nkeys: (0..nshards).map(|_| AtomicUsize::new(0)).collect(),
+            ncoefs: (0..nshards).map(|_| AtomicUsize::new(0)).collect(),
+            bytes: AtomicU64::new(0),
+            on_disk,
+        }
+    }
     /// `dir`: spill to files there; None: keep the generation in memory.
     pub fn new(dir: Option<&Path>, id: usize, nshards: usize) -> Self {
         let on_disk = dir.is_some();
@@ -79,18 +110,12 @@ impl<K: Key> Gen<K> {
                 Err(e) => panic!("create spill namespace {path:?}: {e}"),
             }
         });
-        Gen {
-            paths: match &directory {
-                Some(d) => (0..nshards).map(|s| d.join(format!("g{id}_{s}.bin"))).collect(),
-                None => Vec::new(),
-            },
-            directory,
-            sinks: (0..nshards).map(|_| Mutex::new(if on_disk { Sink::Disk(None) } else { Sink::Memory(Parts::new()) })).collect(),
-            nkeys: (0..nshards).map(|_| AtomicUsize::new(0)).collect(),
-            ncoefs: (0..nshards).map(|_| AtomicUsize::new(0)).collect(),
-            bytes: AtomicU64::new(0),
-            on_disk,
+        let mut g = Gen::blank(nshards, on_disk);
+        if let Some(d) = &directory {
+            g.paths = (0..nshards).map(|s| d.join(format!("g{id}_{s}.bin"))).collect();
         }
+        g.directory = directory;
+        g
     }
     /// A generation on disk at a fixed directory (for checkpointed runs);
     /// anything already there, such as a block interrupted by a crash, is
@@ -100,18 +125,15 @@ impl<K: Key> Gen<K> {
             fs::remove_dir_all(&dir).unwrap_or_else(|e| panic!("clear spill directory {dir:?}: {e}"));
         }
         fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create spill directory {dir:?}: {e}"));
-        let mut g = Gen::new(None, id, nshards);
+        let mut g = Gen::blank(nshards, true);
         g.paths = (0..nshards).map(|s| dir.join(format!("g{id}_{s}.bin"))).collect();
-        g.sinks = (0..nshards).map(|_| Mutex::new(Sink::Disk(None))).collect();
         g.directory = Some(dir);
-        g.on_disk = true;
         g
     }
     /// Reopen a closed generation written by `at` (resuming a checkpoint).
     pub fn reopen(dir: PathBuf, id: usize, nkeys: &[usize], ncoefs: &[usize], bytes: u64) -> Self {
-        let mut g = Gen::new(None, id, nkeys.len());
+        let mut g = Gen::blank(nkeys.len(), true);
         g.paths = (0..nkeys.len()).map(|s| dir.join(format!("g{id}_{s}.bin"))).collect();
-        g.sinks = (0..nkeys.len()).map(|_| Mutex::new(Sink::Disk(None))).collect();
         for (d, (&k, &c)) in nkeys.iter().zip(ncoefs).enumerate() {
             g.nkeys[d].store(k, Ordering::Relaxed);
             g.ncoefs[d].store(c, Ordering::Relaxed);
@@ -121,7 +143,6 @@ impl<K: Key> Gen<K> {
         }
         g.bytes.store(bytes, Ordering::Relaxed);
         g.directory = Some(dir);
-        g.on_disk = true;
         g
     }
     pub fn directory(&self) -> Option<&Path> {
@@ -138,6 +159,40 @@ impl<K: Key> Gen<K> {
     pub fn bytes(&self) -> u64 {
         self.bytes.load(Ordering::Relaxed)
     }
+    fn account(&self, d: usize, nk: usize, nc: usize) {
+        self.nkeys[d].fetch_add(nk, Ordering::Relaxed);
+        self.ncoefs[d].fetch_add(nc, Ordering::Relaxed);
+        self.bytes.fetch_add(chunk_bytes::<K>(nk, nc) as u64, Ordering::Relaxed);
+    }
+    /// Hand a full shard buffer to the writer threads (starting them).
+    fn send(&self, d: usize, buf: Vec<u8>) {
+        let mut guard = self.writer.lock().unwrap();
+        let w = guard.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<(usize, Vec<u8>)>(QUEUE);
+            let rx = std::sync::Arc::new(Mutex::new(rx));
+            let handles = (0..WRITERS)
+                .map(|_| {
+                    let rx = rx.clone();
+                    let files = self.files.clone();
+                    let paths = self.paths.clone();
+                    std::thread::spawn(move || loop {
+                        let msg = rx.lock().unwrap().recv();
+                        let Ok((d, buf)) = msg else { return };
+                        let mut f = files[d].lock().unwrap();
+                        if f.is_none() {
+                            *f = Some(File::create(&paths[d]).unwrap_or_else(|e| panic!("spill create {:?}: {e}", paths[d])));
+                        }
+                        f.as_mut().unwrap().write_all(&buf).expect("spill write (disk full?)");
+                    })
+                })
+                .collect();
+            Writer { tx, handles }
+        });
+        let tx = w.tx.clone();
+        drop(guard); // do not hold the lock while the queue applies backpressure
+        tx.send((d, buf)).expect("spill writer thread died");
+    }
+    /// Append one chunk to shard d.
     fn write(&self, d: usize, keys: &[K], lo: &[u8], hi: &[u8], coefs: &[C]) {
         let mut g = self.sinks[d].lock().unwrap();
         match &mut *g {
@@ -147,31 +202,40 @@ impl<K: Key> Gen<K> {
                 p.hi.extend_from_slice(hi);
                 p.coefs.extend_from_slice(coefs);
             }
-            Sink::Disk(f) => {
-                if f.is_none() {
-                    let file = File::create(&self.paths[d]).unwrap_or_else(|e| panic!("spill create {:?}: {e}", self.paths[d]));
-                    *f = Some(BufWriter::with_capacity(1 << 16, file));
-                }
-                let w = f.as_mut().unwrap();
+            Sink::Disk(buf) => {
                 let hdr = [keys.len() as u64, coefs.len() as u64];
                 for b in [bytes_of(&hdr), bytes_of(keys), lo, hi, bytes_of(coefs)] {
-                    w.write_all(b).expect("spill write (disk full?)");
+                    buf.extend_from_slice(b);
+                }
+                if buf.len() >= FLUSH_BYTES {
+                    let full = std::mem::take(buf);
+                    drop(g);
+                    self.send(d, full);
                 }
             }
         }
-        self.nkeys[d].fetch_add(keys.len(), Ordering::Relaxed);
-        self.ncoefs[d].fetch_add(coefs.len(), Ordering::Relaxed);
-        let b = 16 + std::mem::size_of_val(keys) + lo.len() + hi.len() + std::mem::size_of_val(coefs);
-        self.bytes.fetch_add(b as u64, Ordering::Relaxed);
+        self.account(d, keys.len(), coefs.len());
     }
     /// Flush and close every file (call once all writers are done).
     pub fn close(&self) {
-        for s in &self.sinks {
-            if let Sink::Disk(f) = &mut *s.lock().unwrap() {
-                if let Some(mut w) = f.take() {
-                    w.flush().expect("spill flush (disk full?)");
+        for d in 0..self.sinks.len() {
+            let mut g = self.sinks[d].lock().unwrap();
+            if let Sink::Disk(buf) = &mut *g {
+                if !buf.is_empty() {
+                    let full = std::mem::take(buf);
+                    drop(g);
+                    self.send(d, full);
                 }
             }
+        }
+        if let Some(w) = self.writer.lock().unwrap().take() {
+            drop(w.tx);
+            for h in w.handles {
+                h.join().expect("spill writer thread panicked");
+            }
+        }
+        for f in self.files.iter() {
+            f.lock().unwrap().take();
         }
     }
     /// Take shard d as a sequential table with `nm` moments, or None if empty.
@@ -188,7 +252,9 @@ impl<K: Key> Gen<K> {
                 let p = std::mem::replace(p, Parts::new());
                 Some(Table::from_seq_parts(nm, p.keys, p.lo, p.hi, p.coefs))
             }
-            Sink::Disk(_) => {
+            Sink::Disk(buf) => {
+                assert!(buf.is_empty(), "spill shard {d} read before close");
+                let _t = prof::tsc();
                 let path = &self.paths[d];
                 let file = File::open(path).unwrap_or_else(|e| panic!("spill open {path:?}: {e}"));
                 let mut r = BufReader::with_capacity(1 << 20, file);
@@ -207,21 +273,96 @@ impl<K: Key> Gen<K> {
                     read_into(&mut r, &mut coefs, b);
                 }
                 assert_eq!(coefs.len(), nc, "spill shard {d}: coefficient count");
+                prof::add(prof::T_READ, prof::tsc() - _t);
                 Some(Table::from_seq_parts(nm, keys, lo, hi, coefs))
             }
         }
     }
 }
 
+fn chunk_bytes<K: Key>(nk: usize, nc: usize) -> usize {
+    16 + nk * (std::mem::size_of::<K>() + 2) + nc * std::mem::size_of::<C>()
+}
+
 impl<K: Key> Drop for Gen<K> {
     fn drop(&mut self) {
-        // Close any remaining writers before deleting files on Windows.
-        self.sinks.clear();
+        // Stop the writers and close the files before deleting them (Windows).
+        if let Some(w) = self.writer.get_mut().unwrap().take() {
+            drop(w.tx);
+            for h in w.handles {
+                let _ = h.join();
+            }
+        }
+        for f in self.files.iter() {
+            f.lock().unwrap().take();
+        }
         for p in &self.paths {
             let _ = fs::remove_file(p);
         }
         if let Some(d) = &self.directory {
             let _ = fs::remove_dir(d);
+        }
+    }
+}
+
+/// Reads the shards of a generation ahead of the workers, in shard order
+/// (the order `par_map` hands them out), at most `depth` shards ahead of
+/// those taken. Run `reader` on a few threads and `get` from the workers.
+pub struct Prefetch<'a, K: Key> {
+    gen: &'a Gen<K>,
+    nm: usize,
+    depth: usize,
+    state: Mutex<PrefetchState<K>>,
+    cv: std::sync::Condvar,
+}
+
+struct PrefetchState<K: Key> {
+    next: usize,
+    taken: usize,
+    ready: Vec<Option<Option<Table<K>>>>,
+}
+
+impl<'a, K: Key> Prefetch<'a, K> {
+    pub fn new(gen: &'a Gen<K>, nm: usize, depth: usize) -> Self {
+        let ns = gen.nshards();
+        Prefetch {
+            gen,
+            nm,
+            depth: depth.max(1),
+            state: Mutex::new(PrefetchState { next: 0, taken: 0, ready: (0..ns).map(|_| None).collect() }),
+            cv: std::sync::Condvar::new(),
+        }
+    }
+    /// Reader thread body: read shards in order until all are read.
+    pub fn reader(&self) {
+        loop {
+            let r = {
+                let mut st = self.state.lock().unwrap();
+                while st.next < st.ready.len() && st.next >= st.taken + self.depth {
+                    st = self.cv.wait(st).unwrap();
+                }
+                if st.next >= st.ready.len() {
+                    return;
+                }
+                st.next += 1;
+                st.next - 1
+            };
+            let t = self.gen.take(r, self.nm);
+            self.state.lock().unwrap().ready[r] = Some(t);
+            self.cv.notify_all();
+        }
+    }
+    /// Shard d (None if empty), waiting for its reader if needed.
+    pub fn get(&self, d: usize) -> Option<Table<K>> {
+        let mut st = self.state.lock().unwrap();
+        loop {
+            if let Some(t) = st.ready[d].take() {
+                st.taken += 1;
+                drop(st);
+                self.cv.notify_all();
+                return t;
+            }
+            st = self.cv.wait(st).unwrap();
         }
     }
 }
@@ -251,14 +392,18 @@ mod tests {
 }
 
 /// Split a finished (or append-only) table by `group` into the shards of
-/// `out`: one chunk per target shard, gathered through a counting sort.
+/// `out`: one chunk per target shard, gathered through a counting sort. For a
+/// generation on disk, each chunk is serialized straight into the pending
+/// buffer of its shard.
 pub fn write_split<K: Key, F: Fn(K) -> K>(t: &Table<K>, group: F, out: &Gen<K>) {
+    let _t0 = prof::tsc();
     let ns = out.nshards();
     let n = t.len();
     let mut dest: Vec<u32> = Vec::with_capacity(n);
     let mut offs: Vec<u32> = Vec::with_capacity(n);
     let mut lens: Vec<u32> = Vec::with_capacity(n);
     let mut cnt = vec![0usize; ns];
+    let mut ncs = vec![0usize; ns];
     let mut o = 0usize;
     for (key, _, _, b) in t.iter() {
         let d = shard_of(group(key), ns);
@@ -267,6 +412,7 @@ pub fn write_split<K: Key, F: Fn(K) -> K>(t: &Table<K>, group: F, out: &Gen<K>) 
         lens.push(b.len() as u32);
         o += b.len();
         cnt[d] += 1;
+        ncs[d] += b.len();
     }
     assert!(o <= u32::MAX as usize, "shard arena exceeds 2^32 coefficients: use more shards");
     let mut start = vec![0usize; ns + 1];
@@ -280,6 +426,52 @@ pub fn write_split<K: Key, F: Fn(K) -> K>(t: &Table<K>, group: F, out: &Gen<K>) 
         fill[d as usize] += 1;
     }
     drop(dest);
+    prof::add(prof::W_DEST, prof::tsc() - _t0);
+    if out.on_disk {
+        let ks = std::mem::size_of::<K>();
+        let cs = std::mem::size_of::<C>();
+        for d in 0..ns {
+            if cnt[d] == 0 {
+                continue;
+            }
+            let _tg = prof::tsc();
+            let idx = &perm[start[d]..start[d + 1]];
+            let (nk, nc) = (cnt[d], ncs[d]);
+            let size = chunk_bytes::<K>(nk, nc);
+            let mut g = out.sinks[d].lock().unwrap();
+            let Sink::Disk(buf) = &mut *g else { unreachable!() };
+            let base = buf.len();
+            buf.resize(base + size, 0);
+            let (hdr, rest) = buf[base..].split_at_mut(16);
+            hdr[..8].copy_from_slice(&(nk as u64).to_ne_bytes());
+            hdr[8..].copy_from_slice(&(nc as u64).to_ne_bytes());
+            let (kb, rest) = rest.split_at_mut(nk * ks);
+            let (lb, rest) = rest.split_at_mut(nk);
+            let (hb, cb) = rest.split_at_mut(nk);
+            let mut co = 0usize;
+            for (k, &i) in idx.iter().enumerate() {
+                let i = i as usize;
+                let (l, h) = t.window(i);
+                kb[k * ks..(k + 1) * ks].copy_from_slice(bytes_of(&[t.key(i)]));
+                lb[k] = l as u8;
+                hb[k] = h as u8;
+                let s = offs[i] as usize;
+                let len = lens[i] as usize;
+                cb[co * cs..(co + len) * cs].copy_from_slice(bytes_of(&t.arena[s..s + len]));
+                co += len;
+            }
+            let full = if buf.len() >= FLUSH_BYTES { Some(std::mem::take(buf)) } else { None };
+            drop(g);
+            out.account(d, nk, nc);
+            prof::add(prof::W_GATHER, prof::tsc() - _tg);
+            if let Some(full) = full {
+                let _tw = prof::tsc();
+                out.send(d, full);
+                prof::add(prof::W_OUT, prof::tsc() - _tw);
+            }
+        }
+        return;
+    }
     let mut p: Parts<K> = Parts::new();
     for d in 0..ns {
         if cnt[d] == 0 {

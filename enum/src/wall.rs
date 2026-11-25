@@ -54,6 +54,7 @@ struct Params {
     verbose: bool,
     spill: Option<std::path::PathBuf>,
     spill_above: u64, // bytes: generations larger than this go to disk
+    prefetch: usize,  // spill: threads reading shards ahead of the workers (DP_PREFETCH, default 2; 0 = off)
 }
 
 /// Row t uses key bits up to t/2 + 3: u64 keys allow n <= 121, and the
@@ -399,9 +400,17 @@ fn run_spill(p: &Params, m: Mod, prime: u64) -> [Vec<C>; 6] {
             if on_disk && next.is_some() { spill::Gen::at(gen_dir(bi + 1), bi + 1, ns) } else { spill::Gen::new(None, bi + 1, ns) };
         prof::add(prof::N_PHASE, 1);
         let _tp = prof::tsc();
-        let res: Vec<(usize, usize, Option<[Vec<C>; 6]>)> = par_map(ns, p.threads, |d| {
+        let pre = spill::Prefetch::new(&gen, 1, p.threads);
+        let prefetch = gen.on_disk && p.prefetch > 0;
+        let res: Vec<(usize, usize, Option<[Vec<C>; 6]>)> = std::thread::scope(|sc| {
+        if prefetch {
+            for _ in 0..p.prefetch {
+                sc.spawn(|| pre.reader());
+            }
+        }
+        par_map(ns, p.threads, |d| {
             let _tb = prof::tsc();
-            let Some(src) = prof::time(prof::TAKE, || gen.take(d, 1)) else {
+            let Some(src) = prof::time(prof::TAKE, || if prefetch { pre.get(d) } else { gen.take(d, 1) }) else {
                 return (0, 0, None);
             };
             let mut cur = step(std::slice::from_ref(&src), t, j, p, m);
@@ -419,6 +428,7 @@ fn run_spill(p: &Params, m: Mod, prime: u64) -> [Vec<C>; 6] {
             }
             prof::add(prof::BUSY, prof::tsc() - _tb);
             (cur.len(), mem.max(cur.bytes()), acc)
+        })
         });
         prof::add(prof::M_PAR, prof::tsc() - _tp);
         prof::time(prof::M_CLOSE, || out.close());
@@ -628,7 +638,8 @@ fn main() {
             eprintln!("removed {:?}", d.join("PAUSE"));
         }
     }
-    let p = Params { n, threads, shards, block, verbose, spill, spill_above: spill_above_mib << 20 };
+    let prefetch = std::env::var("DP_PREFETCH").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+    let p = Params { n, threads, shards, block, verbose, spill, spill_above: spill_above_mib << 20, prefetch };
     let primes = modp::primes(first_prime + nprimes);
     // primes already in the output file are done (so a rerun resumes a queue)
     let done = out.as_ref().and_then(|o| std::fs::read_to_string(o).ok()).unwrap_or_default();
