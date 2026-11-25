@@ -1,8 +1,8 @@
 #!/bin/bash
 # Bond series to order 200, all four moments, 31-bit residues (u32 build),
-# out of core (v17: v16 = 7e755f5 two-pass steps and faster bounds, ~1.15x over
-# v15, plus spill read-ahead and write-behind, ~3%
-# v15; resumes v15 checkpoints). The largest coefficients (mu02) reach about 193 bits, so seven
+# out of core. Binary v17: two-pass steps and faster bounds (7e755f5, ~1.15x
+# over v15) plus spill read-ahead and write-behind (cd981fc, ~3%); resumes
+# v15 checkpoints. The largest coefficients (mu02) reach about 193 bits, so seven
 # primes carry them and an eighth verifies. 768 shards keep each shard in
 # flight near 90 MiB at the projected 32 GB peak layer. 6 threads.
 #
