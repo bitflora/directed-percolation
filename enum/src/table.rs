@@ -6,6 +6,7 @@
 //! as dead (hi < lo) so its bound is computed only once per key per step.
 
 use crate::modp::{Mod, C};
+use crate::prof;
 
 /// A state key: u128 for the bulk engine, u64 where the boundary fits.
 pub trait Key: Copy + Eq {
@@ -206,12 +207,18 @@ impl<K: Key> Table<K> {
     /// Append a key that no other source can produce in this step (no hashing).
     #[inline]
     pub fn push_unique(&mut self, key: K, lo: u32, hi: u32) -> usize {
-        self.push(key, lo, hi)
+        prof::add_fine(prof::N_PUSH, 1);
+        prof::time_fine(prof::PUSH, || self.push(key, lo, hi))
     }
     /// Append a unique key whose coefficient block (all moments) is copied
     /// verbatim, without zero-filling the arena first.
     #[inline]
     pub fn push_copy(&mut self, key: K, lo: u32, hi: u32, block: &[C]) {
+        prof::add_fine(prof::N_PUSH, 1);
+        prof::time_fine(prof::PUSH, || self.push_copy_impl(key, lo, hi, block))
+    }
+    #[inline(always)]
+    fn push_copy_impl(&mut self, key: K, lo: u32, hi: u32, block: &[C]) {
         self.is_hashed.push(false);
         self.keys.push(key);
         self.lo.push(lo as u8);
@@ -238,6 +245,15 @@ impl<K: Key> Table<K> {
     /// insert it. Returns None if the state is dead. Probes the table once.
     #[inline]
     pub fn get_or_insert<F: FnOnce(K) -> Option<(u32, u32)>>(
+        &mut self,
+        key: K,
+        f: F,
+    ) -> Option<(usize, u32, u32)> {
+        prof::add_fine(prof::N_GETINS, 1);
+        prof::time_fine(prof::GETINS, || self.get_or_insert_impl(key, f))
+    }
+    #[inline(always)]
+    fn get_or_insert_impl<F: FnOnce(K) -> Option<(u32, u32)>>(
         &mut self,
         key: K,
         f: F,
@@ -272,6 +288,81 @@ impl<K: Key> Table<K> {
             None
         }
     }
+    /// Two-pass construction, first pass: the index of `key`, inserting it as a
+    /// pending entry (no window, no coefficients) if absent. Returns (index, new).
+    /// Pending entries get their windows and arena space in `alloc_pending`.
+    #[inline]
+    pub fn pend_insert(&mut self, key: K) -> (usize, bool) {
+        prof::add_fine(prof::N_GETINS, 1);
+        prof::time_fine(prof::GETINS, || {
+            if (self.hashed + 1) * 2 > self.slots.len() {
+                self.grow();
+            }
+            let mut h = hash(key) as usize & self.mask;
+            loop {
+                let s = self.slots[h];
+                if s == 0 {
+                    break;
+                }
+                let i = s as usize - 1;
+                if self.keys[i] == key {
+                    return (i, false);
+                }
+                h = (h + 1) & self.mask;
+            }
+            let idx = self.pend_push(key);
+            self.is_hashed[idx] = true;
+            self.hashed += 1;
+            self.slots[h] = idx as u32 + 1;
+            (idx, true)
+        })
+    }
+    /// Two-pass construction: append a pending key that no other source can
+    /// produce (no hashing).
+    #[inline]
+    pub fn pend_push(&mut self, key: K) -> usize {
+        let idx = self.keys.len();
+        self.is_hashed.push(false);
+        self.keys.push(key);
+        self.lo.push(1);
+        self.hi.push(0);
+        idx
+    }
+    /// Two-pass construction, between the passes: set the window of every
+    /// entry from `from` on (hi < lo marks a dead entry) and allocate zeroed
+    /// arena space for the live ones, in index order as `finish` requires.
+    pub fn alloc_pending(&mut self, from: usize, windows: &[(u32, u32)]) {
+        assert_eq!(from + windows.len(), self.keys.len());
+        assert_eq!(self.off.len(), from, "alloc_pending: earlier entries must be allocated");
+        assert!(!self.seq);
+        let mut total = self.arena.len();
+        self.off.reserve(windows.len());
+        for (k, &(lo, hi)) in windows.iter().enumerate() {
+            let i = from + k;
+            assert!(total < u32::MAX as usize, "shard arena exceeds 2^32 coefficients: use more shards");
+            self.off.push(total as u32);
+            if hi >= lo {
+                self.lo[i] = lo as u8;
+                self.hi[i] = hi as u8;
+                total += (hi - lo + 1) as usize * self.nm;
+            } else {
+                self.lo[i] = 1;
+                self.hi[i] = 0;
+            }
+        }
+        self.arena.reserve_exact(total - self.arena.len());
+        self.arena.resize(total, 0);
+    }
+    /// Copy a whole block (all moments) into live entry i, whose window equals
+    /// the block's (identity targets).
+    #[inline]
+    pub fn put_block(&mut self, i: usize, block: &[C]) {
+        prof::add_fine(prof::N_PUSH, 1);
+        prof::time_fine(prof::PUSH, || {
+            let o = self.off[i] as usize;
+            self.arena[o..o + block.len()].copy_from_slice(block);
+        })
+    }
     /// Drop dead entries and the hash index (call when construction is done).
     pub fn finish(&mut self) {
         self.finish_impl(false);
@@ -283,6 +374,9 @@ impl<K: Key> Table<K> {
         self.finish_impl(true);
     }
     fn finish_impl(&mut self, sequential: bool) {
+        prof::time(prof::FINISH, || self.finish_inner(sequential))
+    }
+    fn finish_inner(&mut self, sequential: bool) {
         self.slots = Vec::new();
         self.mask = 0;
         self.is_hashed = Vec::new();
@@ -362,6 +456,12 @@ impl<K: Key> Table<K> {
     }
     #[inline(always)]
     pub fn accumulate(&mut self, i: usize, mm: usize, off: usize, src: &[C], neg: bool, m: Mod) {
+        prof::add_fine(prof::N_ACC, 1);
+        prof::add_fine(prof::N_ACC_ELEMS, src.len() as u64);
+        prof::time_fine(prof::ACC, || self.accumulate_impl(i, mm, off, src, neg, m))
+    }
+    #[inline(always)]
+    fn accumulate_impl(&mut self, i: usize, mm: usize, off: usize, src: &[C], neg: bool, m: Mod) {
         let dst = &mut self.coef_mut(i, mm)[off..off + src.len()];
         if neg {
             for (d, &s) in dst.iter_mut().zip(src) {

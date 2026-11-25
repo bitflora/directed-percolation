@@ -37,6 +37,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 mod modp;
+mod prof;
 mod spill;
 mod table;
 
@@ -80,6 +81,7 @@ fn par_map<T: Send, F: Fn(usize) -> T + Sync>(count: usize, threads: usize, f: F
                 }
                 let r = f(i);
                 out.lock().unwrap()[i] = Some(r);
+                prof::flush();
             });
         }
     });
@@ -141,7 +143,7 @@ fn window(key: Key, t: usize, above: u32, n: usize) -> Option<(u32, u32)> {
 /// into the state with key `key` of `nt`.
 #[inline]
 fn add_to(nt: &mut Table<Key>, key: Key, src: &[C], slo: u32, shift: u32, neg: bool, t: usize, above: u32, n: usize, m: Mod) {
-    let Some((idx, lo, hi)) = nt.get_or_insert(key, |k| window(k, t, above, n)) else {
+    let Some((idx, lo, hi)) = nt.get_or_insert(key, |k| prof::time(prof::BOUND, || window(k, t, above, n))) else {
         return;
     };
     let a = slo + shift; // order of src[0] after the shift
@@ -167,6 +169,7 @@ fn step(srcs: &[Table<Key>], t: usize, j: usize, p: &Params, m: Mod) -> Table<Ke
     nt.reserve_coefs(nc + nc / 8);
     let bp: Key = 1 << pb;
     let bl: Key = 1 << (pb - 1);
+    let _ts = prof::tsc();
     for s in srcs {
         for (key, slo, shi, w) in s.iter() {
             // Targets whose bit P-1 is clear have exactly one source (the
@@ -198,6 +201,7 @@ fn step(srcs: &[Table<Key>], t: usize, j: usize, p: &Params, m: Mod) -> Table<Ke
             add_to(&mut nt, key | bl, w, slo, 2, neg, t, above, n, m);
         }
     }
+    prof::add(prof::STEP, prof::tsc() - _ts);
     nt.finish_seq();
     nt
 }
@@ -393,8 +397,11 @@ fn run_spill(p: &Params, m: Mod, prime: u64) -> [Vec<C>; 6] {
         on_disk |= gen.bytes() > p.spill_above;
         let out: spill::Gen<Key> =
             if on_disk && next.is_some() { spill::Gen::at(gen_dir(bi + 1), bi + 1, ns) } else { spill::Gen::new(None, bi + 1, ns) };
+        prof::add(prof::N_PHASE, 1);
+        let _tp = prof::tsc();
         let res: Vec<(usize, usize, Option<[Vec<C>; 6]>)> = par_map(ns, p.threads, |d| {
-            let Some(src) = gen.take(d, 1) else {
+            let _tb = prof::tsc();
+            let Some(src) = prof::time(prof::TAKE, || gen.take(d, 1)) else {
                 return (0, 0, None);
             };
             let mut cur = step(std::slice::from_ref(&src), t, j, p, m);
@@ -403,16 +410,18 @@ fn run_spill(p: &Params, m: Mod, prime: u64) -> [Vec<C>; 6] {
             for jj in j + 1..jend {
                 cur = step(std::slice::from_ref(&cur), t, jj, p, m);
             }
-            let acc = if row_end { Some(accumulate(&cur, t + 1, n, m)) } else { None };
+            let acc = if row_end { Some(prof::time(prof::ROWEND, || accumulate(&cur, t + 1, n, m))) } else { None };
             if row_end && e == 1 {
                 cur.map_keys(|k| k << 1); // relabel for row t+1
             }
             if let Some(tc) = next {
-                spill::write_split(&cur, |k| k & !tc, &out);
+                prof::time(prof::WRITE, || spill::write_split(&cur, |k| k & !tc, &out));
             }
+            prof::add(prof::BUSY, prof::tsc() - _tb);
             (cur.len(), mem.max(cur.bytes()), acc)
         });
-        out.close();
+        prof::add(prof::M_PAR, prof::tsc() - _tp);
+        prof::time(prof::M_CLOSE, || out.close());
         if gen.on_disk {
             io += gen.bytes();
         }
@@ -457,15 +466,16 @@ fn run_spill(p: &Params, m: Mod, prime: u64) -> [Vec<C>; 6] {
                 secs,
                 ser: ser.clone(),
             };
-            ckpt_write(p, prime, &c);
+            prof::time(prof::M_CKPT, || ckpt_write(p, prime, &c));
         }
-        gen = out; // drops the spent generation and deletes its files
+        prof::time(prof::M_DROP, || gen = out); // drops the spent generation and deletes its files
         if bi + 1 < bl.len() && dir.join("PAUSE").exists() {
             if saved {
                 eprintln!("paused before block {} of {} (row {}), {:.1}s: rerun the same command to resume", bi + 1, bl.len(), t + 1, secs);
             } else {
                 eprintln!("paused before the layer reached disk: nothing saved, a rerun starts this prime over");
             }
+            prof::report(p.threads);
             std::process::exit(3); // skips Drop, so the checkpointed generation stays
         }
     }
@@ -628,6 +638,7 @@ fn main() {
             continue;
         }
         let m = Mod::new(pr);
+        prof::start();
         let t0 = Instant::now();
         let ser = run(&p, m, pr);
         let mut line = format!("{{\"model\":\"bond_wall\",\"n\":{},\"prime\":{},\"seconds\":{:.3}", n, pr, t0.elapsed().as_secs_f64());
@@ -637,6 +648,7 @@ fn main() {
         }
         line.push('}');
         eprintln!("prime {} done in {:.2}s", pr, t0.elapsed().as_secs_f64());
+        prof::report(threads);
         match &out {
             Some(path) => {
                 let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();

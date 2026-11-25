@@ -31,6 +31,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 mod modp;
+mod prof;
+#[cfg(feature = "gpu")]
+mod gpu;
 mod spill;
 mod table;
 
@@ -61,6 +64,9 @@ pub struct Params {
     pub park: bool,     // single-thread mode: parked pass (--park): ~11% faster, ~46% more memory
     pub spill: Option<std::path::PathBuf>, // --spill DIR: out-of-core sweep (`run_spill`)
     pub spill_above: u64, // bytes: generations larger than this go to disk
+    pub batch: bool, // --batch: two-pass steps with batched bounds (`step_batch`)
+    pub gpu: bool,   // --gpu: batched bounds on the GPU (implies --batch)
+    pub gpu_min: usize, // batches smaller than this stay on the CPU (DP_GPU_MIN)
 }
 
 /// Heap accounting (current and peak bytes), so reported peaks are measured
@@ -216,7 +222,7 @@ mod tests {
         let tmax = if model == Model::Bond { n / 2 } else { (n + 1) / 2 };
         Params { n, model, tmax, moments: 3, verbose: false, profile: false, loose: false, mirror: true,
                  threads: 1, shards: 1, slack: false, nosign: false, cheap_lo: false, block: 8, park: true,
-                 spill: None, spill_above: 0 }
+                 spill: None, spill_above: 0, batch: false, gpu: false, gpu_min: 0 }
     }
 
     #[test]
@@ -284,7 +290,8 @@ pub fn bound_with(key: u128, j: usize, s: usize, p: &Params, lo_known: Option<u3
         profile_add(4, 1);
         return r;
     }
-    bound_inner(key, j, s, p, lo_known)
+    prof::add_fine(prof::N_BOUND, 1);
+    prof::time_fine(prof::BOUND, || bound_inner(key, j, s, p, lo_known))
 }
 
 /// Greedy window cover on bit masks. Points are intervals [l, l] (bit l of
@@ -522,6 +529,7 @@ fn par_map<T: Send, F: Fn(usize) -> T + Sync>(count: usize, threads: usize, f: F
                     out.lock().unwrap()[i] = Some(r);
                 }
                 flush_profile();
+                prof::flush();
             });
         }
     });
@@ -543,6 +551,7 @@ fn split_layer<F: Fn(u128) -> u128 + Sync>(
     use std::sync::Mutex;
     let srcs: Vec<Mutex<Option<Table>>> = layer.into_iter().map(|t| Mutex::new(Some(t))).collect();
     let parts: Vec<Vec<Table>> = par_map(srcs.len(), threads, |si| {
+        let _ts = prof::tsc();
         let t = srcs[si].lock().unwrap().take().unwrap();
         let mut dest: Vec<u32> = Vec::with_capacity(t.len());
         let mut nk = vec![0usize; nshards];
@@ -558,6 +567,7 @@ fn split_layer<F: Fn(u128) -> u128 + Sync>(
             let (lo, hi) = t.window(i);
             v[dest[i] as usize].push_copy(t.key(i), lo, hi, t.block(i));
         }
+        prof::add(prof::SPLIT, prof::tsc() - _ts);
         v
     });
     let mut out: Vec<Vec<Table>> = (0..nshards).map(|_| Vec::with_capacity(parts.len())).collect();
@@ -710,26 +720,26 @@ pub fn run(p: &Params, m: Mod) -> Raw {
             let touched: u128 = (if jend >= 127 { !0u128 } else { (2u128 << jend) - 1 }) & !((1u128 << j) - 1);
             let pieces = split_layer(std::mem::take(&mut layer), nshards, threads, nm, |k| k & !touched);
             let new: Layer = par_map(nshards, threads, |ti| {
+                let _tb = prof::tsc();
                 let list = std::mem::take(&mut *pieces[ti].lock().unwrap());
                 let cnt: usize = list.iter().map(|t| t.len()).sum();
                 let nc: usize = list.iter().map(|t| t.coefs()).sum();
                 let mut cur = Table::new(nm, cnt + cnt / 2 + 16);
                 cur.reserve_coefs(nc + nc / 8);
-                for src in list {
-                    for i in 0..src.len() {
-                        step_one(&src, i, &mut cur, j, s, p, m);
-                    }
+                {
+                    let refs: Vec<&Table> = list.iter().collect();
+                    step_all(&refs, &mut cur, j, s, p, m);
                 }
+                drop(list);
                 cur.finish();
                 for jj in (j + 1)..jend {
                     let mut nt = Table::new(nm, cur.len() + cur.len() / 2 + 16);
                     nt.reserve_coefs(cur.coefs() + cur.coefs() / 8);
-                    for i in 0..cur.len() {
-                        step_one(&cur, i, &mut nt, jj, s, p, m);
-                    }
+                    step_all(&[&cur], &mut nt, jj, s, p, m);
                     nt.finish();
                     cur = nt;
                 }
+                prof::add(prof::BUSY, prof::tsc() - _tb);
                 cur
             });
             peak_states = peak_states.max(layer_len(&new));
@@ -767,18 +777,20 @@ pub fn run(p: &Params, m: Mod) -> Raw {
         } else {
             let pieces = split_layer(std::mem::take(&mut layer), nshards, threads, nm, group);
             let results: Vec<(Table, Scratch)> = par_map(nshards, threads, |ti| {
+                let _tb = prof::tsc();
                 let list = std::mem::take(&mut *pieces[ti].lock().unwrap());
                 let cnt: usize = list.iter().map(|t| t.len()).sum();
                 let nc: usize = list.iter().map(|t| t.coefs()).sum();
                 let mut nt = Table::new(nm, cnt + 16);
                 nt.reserve_coefs(nc + nc / 8);
                 let mut sc = Scratch::new(n);
-                for src in list {
+                prof::time(prof::ROWEND, || for src in list {
                     for i in 0..src.len() {
                         row_end_one(&src, i, &mut nt, &mut sc, t, p, m);
                     }
-                }
+                });
                 nt.finish();
+                prof::add(prof::BUSY, prof::tsc() - _tb);
                 (nt, sc)
             });
             for (nt, sc) in results {
@@ -978,28 +990,26 @@ pub fn run_spill(p: &Params, m: Mod, prime: u64) -> Raw {
                 spill::Gen::new(None, pi_next, ns)
             };
             let t = s + 1;
+            prof::add(prof::N_PHASE, 1);
+            let _tp = prof::tsc();
             let res: Vec<(usize, usize, usize, Option<Scratch>)> = par_map(ns, p.threads, |d| {
-                let Some(src) = gen.take(d, nm) else {
+                let _tb = prof::tsc();
+                let Some(src) = prof::time(prof::TAKE, || gen.take(d, nm).map(|t| t.into_indexed())) else {
                     return (0, 0, 0, None);
                 };
-                let src = src.into_indexed();
                 let (cnt, nc) = (src.len(), src.coefs());
                 let (cur, sc, mem) = match ph {
                     Phase::Block(j, jend) => {
                         let mut cur = Table::new(nm, cnt + cnt / 2 + 16);
                         cur.reserve_coefs(nc + nc / 8);
-                        for i in 0..src.len() {
-                            step_one(&src, i, &mut cur, j, s, p, m);
-                        }
+                        step_all(&[&src], &mut cur, j, s, p, m);
                         cur.finish();
                         let mem = src.bytes() + cur.bytes();
                         drop(src);
                         for jj in (j + 1)..jend {
                             let mut nt = Table::new(nm, cur.len() + cur.len() / 2 + 16);
                             nt.reserve_coefs(cur.coefs() + cur.coefs() / 8);
-                            for i in 0..cur.len() {
-                                step_one(&cur, i, &mut nt, jj, s, p, m);
-                            }
+                            step_all(&[&cur], &mut nt, jj, s, p, m);
                             nt.finish();
                             cur = nt;
                         }
@@ -1009,20 +1019,22 @@ pub fn run_spill(p: &Params, m: Mod, prime: u64) -> Raw {
                         let mut nt = Table::new(nm, cnt + 16);
                         nt.reserve_coefs(nc + nc / 8);
                         let mut sc = Scratch::new(n);
-                        for i in 0..src.len() {
+                        prof::time(prof::ROWEND, || for i in 0..src.len() {
                             row_end_one(&src, i, &mut nt, &mut sc, t, p, m);
-                        }
+                        });
                         nt.finish();
                         let mem = src.bytes() + nt.bytes();
                         (nt, Some(sc), mem)
                     }
                 };
                 if !last_phase {
-                    spill::write_split(&cur, &group, &out);
+                    prof::time(prof::WRITE, || spill::write_split(&cur, &group, &out));
                 }
+                prof::add(prof::BUSY, prof::tsc() - _tb);
                 (cur.len(), mem.max(cur.bytes()), cur.max_width(), sc)
             });
-            out.close();
+            prof::add(prof::M_PAR, prof::tsc() - _tp);
+            prof::time(prof::M_CLOSE, || out.close());
             if gen.on_disk {
                 io += gen.bytes();
             }
@@ -1072,16 +1084,17 @@ pub fn run_spill(p: &Params, m: Mod, prime: u64) -> Raw {
                 for tt in 0..=p.tmax {
                     text += &format!("sn{tt}={}\nxn{tt}={}\n", spill::join(&sn[tt]), spill::join(&xn[tt]));
                 }
-                spill::save_text(&ckpt, &text);
+                prof::time(prof::M_CKPT, || spill::save_text(&ckpt, &text));
             }
-            gen = out; // drops the spent generation and deletes its files
-            trim_heap();
+            prof::time(prof::M_DROP, || gen = out); // drops the spent generation and deletes its files
+            prof::time(prof::M_TRIM, trim_heap);
             if !last_phase && dir.join("PAUSE").exists() {
                 if saved {
                     eprintln!("paused at row {} phase {}, {:.1}s: rerun the same command to resume", ns_next, pi_next, secs);
                 } else {
                     eprintln!("paused before the layer reached disk: nothing saved, a rerun starts this prime over");
                 }
+                prof::report(p.threads);
                 std::process::exit(3); // skips Drop, so the checkpointed generation stays
             }
         }
@@ -1302,7 +1315,7 @@ fn step_parked(tab: &Table, i: usize, pend: &mut [Table], j: usize, s: usize, p:
         let na = next_active(nkey, j + 1, done);
         let nt = &mut pend[na];
         let (idx, nlo, nhi) = if unique {
-            match bound_with(nkey, j + 1, s, p, Some(lo + e)) {
+            match prof::time_fine(prof::BOUND_U, || bound_with(nkey, j + 1, s, p, Some(lo + e))) {
                 Some((nlo, nhi)) => (nt.push_unique(nkey, nlo, nhi), nlo, nhi),
                 None => continue,
             }
@@ -1314,6 +1327,173 @@ fn step_parked(tab: &Table, i: usize, pend: &mut [Table], j: usize, s: usize, p:
         };
         add_block(tab, i, nt, idx, nlo, nhi, e, neg, nm, m);
     }
+}
+
+/// Targets of a state at column j: (target bits, degree shift, negate, unique),
+/// or None for the identity (vertex absent, nothing pending). Same moves as
+/// `step_one`.
+#[inline(always)]
+fn moves(key: u128, j: usize, p: &Params) -> Option<([(u128, u32, bool, bool); 3], usize)> {
+    let bj: u128 = 1 << j;
+    let bj1: u128 = 1 << (j + 1);
+    let q = key & bj != 0;
+    let a = key & bj1 != 0;
+    let mut tr: [(u128, u32, bool, bool); 3] = [(0, 0, false, false); 3];
+    let ntr = match (q, a, p.model) {
+        (false, false, _) => return None,
+        (true, false, _) => {
+            tr[0] = (bj, 0, false, false);
+            1
+        }
+        (false, true, _) => {
+            tr[0] = (bj, 1, false, false);
+            tr[1] = (bj1, 1, false, true);
+            tr[2] = (bj | bj1, 2, false, false);
+            3
+        }
+        (true, true, Model::Bond) => {
+            tr[0] = (bj, 1, true, false);
+            tr[1] = (bj | bj1, 1, false, false);
+            tr[2] = (bj | bj1, 2, true, false);
+            3
+        }
+        (true, true, Model::Site) if p.nosign => {
+            tr[0] = (bj, 0, false, false);
+            tr[1] = (bj | bj1, 1, false, false);
+            tr[2] = (bj | bj1, 1, false, false);
+            3
+        }
+        (true, true, Model::Site) => {
+            tr[0] = (bj, 0, true, false);
+            1
+        }
+    };
+    let base = key & !(bj | bj1);
+    for t in tr[..ntr].iter_mut() {
+        t.0 |= base;
+        t.2 = t.2 && !p.nosign;
+    }
+    Some((tr, ntr))
+}
+
+/// Bounds for a batch of new states at column j1 of row s: (lo, hi), or
+/// (1, 0) for a dead state. `lo_known[k] >= 0` passes a known lower end
+/// (`bound_with`). On the GPU with `--gpu`, unless the batch is small.
+fn bound_batch(keys: &[u128], lo_known: &[i32], j1: usize, s: usize, p: &Params, out: &mut Vec<(u32, u32)>) {
+    out.clear();
+    #[cfg(feature = "gpu")]
+    if p.gpu && keys.len() >= p.gpu_min {
+        prof::add(prof::N_GPU, keys.len() as u64);
+        prof::add(prof::N_GPU_CALLS, 1);
+        prof::time(prof::GPU, || gpu::bound(keys, lo_known, j1, s, p, out));
+        return;
+    }
+    let t = prof::tsc();
+    out.extend(keys.iter().zip(lo_known).map(|(&k, &l)| {
+        let lk = if l >= 0 { Some(l as u32) } else { None };
+        bound_with(k, j1, s, p, lk).unwrap_or((1, 0))
+    }));
+    if !prof::FINE {
+        prof::add(prof::BOUND, prof::tsc() - t);
+        prof::add(prof::N_BOUND, keys.len() as u64);
+    }
+}
+
+/// Column j of row s for every state of `srcs`, into `nt` (empty), in two
+/// passes so that bounds are computed in one batch: pass 1 inserts every
+/// target as a pending entry and collects the new ones; the batch gives their
+/// windows and the arena is allocated; pass 2 adds the coefficients. Produces
+/// the same table as `step_one` over the same sources (up to dead entries,
+/// which `finish` drops).
+fn step_batch(srcs: &[&Table], nt: &mut Table, j: usize, s: usize, p: &Params, m: Mod) {
+    assert_eq!(nt.len(), 0);
+    let nm = p.moments;
+    let total: usize = srcs.iter().map(|t| t.len()).sum();
+    let mut tgt: Vec<u32> = Vec::with_capacity(total * 2);
+    let mut windows: Vec<(u32, u32)> = Vec::with_capacity(total * 2);
+    let mut bkeys: Vec<u128> = Vec::with_capacity(total);
+    let mut blo: Vec<i32> = Vec::with_capacity(total);
+    let mut bpos: Vec<u32> = Vec::with_capacity(total);
+    // pass 1: targets
+    for src in srcs {
+        for i in 0..src.len() {
+            let key = src.key(i);
+            let (lo, hi) = src.window(i);
+            let Some((tr, ntr)) = moves(key, j, p) else {
+                if p.profile { profile_add(2, 1); }
+                tgt.push(nt.pend_push(key) as u32);
+                windows.push((lo, hi));
+                continue;
+            };
+            for &(nkey, e, _neg, unique) in &tr[..ntr] {
+                let (idx, new) = if unique { (nt.pend_push(nkey), true) } else { nt.pend_insert(nkey) };
+                if new {
+                    bpos.push(windows.len() as u32);
+                    windows.push((1, 0));
+                    bkeys.push(nkey);
+                    blo.push(if unique { (lo + e) as i32 } else { -1 });
+                }
+                tgt.push(idx as u32);
+            }
+        }
+    }
+    // windows of the new states, then the arena
+    let mut bw = Vec::new();
+    bound_batch(&bkeys, &blo, j + 1, s, p, &mut bw);
+    drop(bkeys);
+    drop(blo);
+    for (&pos, &w) in bpos.iter().zip(&bw) {
+        windows[pos as usize] = w;
+    }
+    drop(bpos);
+    drop(bw);
+    nt.alloc_pending(0, &windows);
+    drop(windows);
+    // pass 2: coefficients
+    let mut c = 0usize;
+    for src in srcs {
+        for i in 0..src.len() {
+            let key = src.key(i);
+            let (lo, hi) = src.window(i);
+            let Some((tr, ntr)) = moves(key, j, p) else {
+                nt.put_block(tgt[c] as usize, src.block(i));
+                c += 1;
+                continue;
+            };
+            for &(_nkey, e, neg, _unique) in &tr[..ntr] {
+                let idx = tgt[c] as usize;
+                c += 1;
+                let (nlo, nhi) = nt.window(idx);
+                let a0 = (lo + e).max(nlo);
+                let a1 = (hi + e).min(nhi);
+                if a0 > a1 {
+                    continue;
+                }
+                let src_off = (a0 - e - lo) as usize;
+                let dst_off = (a0 - nlo) as usize;
+                let len = (a1 - a0 + 1) as usize;
+                for mm in 0..nm {
+                    nt.accumulate(idx, mm, dst_off, &src.coef(i, mm)[src_off..src_off + len], neg, m);
+                }
+            }
+        }
+    }
+}
+
+/// Column j of row s for every state of `srcs` into `nt`: batched (`--batch`,
+/// `--gpu`) or one state at a time.
+fn step_all(srcs: &[&Table], nt: &mut Table, j: usize, s: usize, p: &Params, m: Mod) {
+    prof::time(prof::STEP, || {
+        if p.batch {
+            step_batch(srcs, nt, j, s, p, m);
+        } else {
+            for src in srcs {
+                for i in 0..src.len() {
+                    step_one(src, i, nt, j, s, p, m);
+                }
+            }
+        }
+    })
 }
 
 /// Process column j of row s for one source state into the target table.
@@ -1372,7 +1552,7 @@ fn step_one(tab: &Table, i: usize, nt: &mut Table, j: usize, s: usize, p: &Param
         let neg = neg && !p.nosign;
         let nkey = base | bits;
         let (idx, nlo, nhi) = if unique {
-            match bound_with(nkey, j + 1, s, p, Some(lo + e)) {
+            match prof::time_fine(prof::BOUND_U, || bound_with(nkey, j + 1, s, p, Some(lo + e))) {
                 Some((nlo, nhi)) => (nt.push_unique(nkey, nlo, nhi), nlo, nhi),
                 None => continue,
             }
@@ -1447,6 +1627,9 @@ fn main() {
     let mut threads = 4usize;
     let mut block = 8usize;
     let mut park = false;
+    let mut batch = false;
+    let mut gpu = false;
+    let gpu_min: usize = std::env::var("DP_GPU_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(4096);
     let mut shards: Option<usize> = None;
     let mut spill: Option<std::path::PathBuf> = None;
     let mut spill_above_mib = 256u64;
@@ -1475,6 +1658,15 @@ fn main() {
             "--loose" => loose = true,
             "--no-mirror" => mirror = false,
             "--park" => park = true,
+            "--batch" => batch = true,
+            "--gpu" => {
+                if !cfg!(feature = "gpu") {
+                    eprintln!("--gpu needs a build with --features gpu");
+                    std::process::exit(2);
+                }
+                gpu = true;
+                batch = true;
+            }
             "--block" => {
                 block = args[i + 1].parse().unwrap();
                 i += 1;
@@ -1519,7 +1711,7 @@ fn main() {
     let nosign = std::env::var("DP_NOSIGN").is_ok();
     let cheap_lo = std::env::var("DP_CHEAP_LO").is_ok();
     let profile = std::env::var("DP_PROFILE").is_ok();
-    let p = Params { n, model, tmax, moments, verbose, profile, loose, mirror, threads, shards, slack, nosign, cheap_lo, block, park, spill, spill_above: spill_above_mib << 20 };
+    let p = Params { n, model, tmax, moments, verbose, profile, loose, mirror, threads, shards, slack, nosign, cheap_lo, block, park, spill, spill_above: spill_above_mib << 20, batch, gpu, gpu_min };
     let primes = modp::primes(first_prime + nprimes);
     // spill mode: primes already in the output file are done, so rerunning
     // the same command resumes a queue
@@ -1532,6 +1724,7 @@ fn main() {
             continue;
         }
         let m = Mod::new(pr);
+        prof::start();
         let t0 = Instant::now();
         let raw = if p.spill.is_some() { run_spill(&p, m, pr) } else { run(&p, m) };
         let series = assemble(&raw, &p, m);
@@ -1553,6 +1746,12 @@ fn main() {
         }
         line.push('}');
         eprintln!("prime {} done in {:.2}s", pr, t0.elapsed().as_secs_f64());
+        prof::report(threads);
+        #[cfg(feature = "gpu")]
+        if p.gpu && p.verbose {
+            let (h2d, k, d2h) = gpu::stats();
+            eprintln!("gpu: stream time h2d {:.2}s kernel {:.2}s d2h {:.2}s (summed over streams)", h2d, k, d2h);
+        }
         // write each prime as soon as it is done so long runs can be resumed
         match &out {
             Some(path) => {

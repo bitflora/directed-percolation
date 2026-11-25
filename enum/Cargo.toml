@@ -8,6 +8,12 @@ u32 = []
 u16 = []
 # dpwall: u128 keys instead of u64, for n > 121 (8 more bytes per state)
 wide = []
+# per-stage rdtsc profile (src/prof.rs); off by default, zero cost when off
+prof = []
+# also per-call timers (hash, accumulate, push, single bounds): distorts totals
+prof-fine = ["prof"]
+# batched bounds on an NVIDIA GPU (src/gpu.rs, src/gpu_bound.cu; needs CUDA and nvcc)
+gpu = []
 
 [[bin]]
 name = "dpenum"
